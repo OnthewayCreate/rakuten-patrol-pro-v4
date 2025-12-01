@@ -15,15 +15,15 @@ import {
 
 /**
  * ============================================================================
- * Rakuten Patrol Pro - Direct Client-Side AI Version
+ * Rakuten Patrol Pro - Stable Server-Side Version (Gemini 2.5)
  * ============================================================================
  */
 
 const APP_CONFIG = {
   FIXED_PASSWORD: 'admin', 
-  API_TIMEOUT: 60000, 
+  API_TIMEOUT: 90000, 
   RETRY_LIMIT: 5,     
-  VERSION: '17.0.0-Direct'
+  VERSION: '17.1.0-Stable'
 };
 
 // NGカテゴリ・キーワード定義
@@ -50,32 +50,7 @@ const checkRestrictedCategory = (productName) => {
   return foundKey ? `【NG商材】"${foundKey}" 関連` : null;
 };
 
-// --- Direct Gemini API Call (Client Side) ---
-async function callGeminiDirectly(apiKey, prompt, isTest = false) {
-    const cleanKey = apiKey.trim().replace(/[\r\n\s]/g, '');
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${cleanKey}`;
-    
-    const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }]
-        })
-    });
-
-    if (!response.ok) {
-        const err = await response.json().catch(() => ({}));
-        throw new Error(err.error?.message || `HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) throw new Error('No response from AI');
-    
-    return text;
-}
-
-// --- Analysis Logic ---
+// --- API Wrapper (Server Side Proxy) ---
 async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
   const restrictedReason = checkRestrictedCategory(itemData.productName);
   
@@ -83,21 +58,36 @@ async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
   const keyIndex = (Math.floor(Math.random() * apiKeys.length) + retryCount) % apiKeys.length;
   const currentKey = apiKeys.length > 0 ? apiKeys[keyIndex] : '';
 
-  const prompt = `
-    あなたはECサイトのコンプライアンス担当です。
-    商品名: "${itemData.productName}"
-    この商品が「楽天市場の禁止商材（医薬品、偽ブランド、アダルト、金券、生体など）」や「薬機法・景表法違反のリスク」に該当するか判定してください。
-    
-    リスクレベルを "低", "中", "高" のいずれかで回答し、理由を20文字以内で簡潔に述べてください。
-    出力フォーマット(JSON): {"risk_level": "レベル", "is_critical": boolean, "reason": "理由"}
-  `;
-
   try {
-    const aiResponseText = await callGeminiDirectly(currentKey, prompt);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), APP_CONFIG.API_TIMEOUT);
+
+    // Vercel Serverless Function経由で実行
+    const res = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ productName: itemData.productName, imageUrl: itemData.imageUrl, apiKey: currentKey }),
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+
+    // ステータスコードチェック
+    if (res.status === 429 || res.status >= 500) {
+      if (retryCount < APP_CONFIG.RETRY_LIMIT) {
+        const waitTime = Math.pow(2, retryCount) * 1000 + (Math.random() * 1000);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        return analyzeItemRisk(itemData, apiKeys, retryCount + 1);
+      }
+    }
     
-    // JSON抽出
-    const jsonMatch = aiResponseText.match(/\{[\s\S]*\}/);
-    const aiResult = jsonMatch ? JSON.parse(jsonMatch[0]) : { risk_level: "不明", is_critical: false, reason: "解析不能" };
+    const data = await res.json();
+
+    if (!res.ok) {
+        // サーバーから返された具体的なエラー理由を投げる
+        throw new Error(data.reason || `Error ${res.status}`);
+    }
+
+    const aiResult = data;
 
     if (restrictedReason) {
       return { ...aiResult, risk_level: '高', is_critical: true, reason: `${restrictedReason} (AI: ${aiResult.reason})` };
@@ -105,15 +95,6 @@ async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
     return aiResult;
 
   } catch (error) {
-    const isOverload = error.message.includes('429') || error.message.includes('503');
-    
-    if (isOverload && retryCount < APP_CONFIG.RETRY_LIMIT) {
-        // バックオフ待機してリトライ
-        const waitTime = Math.pow(2, retryCount) * 1000 + (Math.random() * 500);
-        await new Promise(r => setTimeout(r, waitTime));
-        return analyzeItemRisk(itemData, apiKeys, retryCount + 1);
-    }
-
     if (restrictedReason) return { risk_level: '高', is_critical: true, reason: `${restrictedReason} (Error)` };
     return { risk_level: "エラー", reason: error.message };
   }
@@ -122,8 +103,23 @@ async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
 // キーの健全性チェック関数
 async function checkApiKeyHealth(apiKey) {
     try {
-        await callGeminiDirectly(apiKey, "Reply with 'OK'.", true);
-        return { ok: true, status: 200, msg: 'OK' };
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(), 10000); 
+        
+        const res = await fetch('/api/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ apiKey, isTest: true }),
+            signal: controller.signal
+        });
+        
+        const data = await res.json().catch(()=>({}));
+        
+        if (res.ok) return { ok: true, status: 200, msg: 'OK' };
+        
+        // エラーメッセージの取得
+        const msg = data.reason || data.error || res.statusText;
+        return { ok: false, status: res.status, msg: msg };
     } catch (e) {
         return { ok: false, status: 'ERR', msg: e.message };
     }
@@ -292,7 +288,7 @@ const SinglePatrolView = ({ config, db, addToast }) => {
         
         const count = d.count || 0;
         const concurrency = Math.max(1, config.apiKeys.length * 3);
-        const estTime = Math.ceil(count / concurrency * 1.0); // 高速化を反映
+        const estTime = Math.ceil(count / concurrency * 1.0);
 
         setMeta({ count, estimatedTime: estTime });
         setStatus('ready');
@@ -317,8 +313,6 @@ const SinglePatrolView = ({ config, db, addToast }) => {
     let p = 1;
     let processedCount = 0;
     let all = [];
-    
-    // キー数に応じて並列数を最大化（5キーなら15〜20並列）
     const BATCH = Math.min(config.apiKeys.length * 4, 30); 
 
     try {
@@ -343,7 +337,7 @@ const SinglePatrolView = ({ config, db, addToast }) => {
 
         if(!d.products?.length) break;
 
-        setMsg(`ページ ${p}: ${d.products.length}件 高速分析中 (並列:${BATCH})...`);
+        setMsg(`ページ ${p}: ${d.products.length}件 分析中 (並列:${BATCH})...`);
         
         for(let i=0; i<d.products.length; i+=BATCH) {
           if(stopRef.current) break;
@@ -363,7 +357,6 @@ const SinglePatrolView = ({ config, db, addToast }) => {
           
           setProgress({ processed: processedCount, remainingTime: remTime, startTime });
           
-          // 直接通信なら待機時間はほぼ不要だが、念のため短く設定
           await new Promise(r=>setTimeout(r, 500));
         }
         
@@ -390,7 +383,7 @@ const SinglePatrolView = ({ config, db, addToast }) => {
   return (
     <div className="h-full flex flex-col animate-in fade-in duration-500">
       <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm mb-4 flex-shrink-0">
-        <h2 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><ShoppingBag className="w-5 h-5 text-blue-600"/> 通常パトロール (超高速モード)</h2>
+        <h2 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><ShoppingBag className="w-5 h-5 text-blue-600"/> 通常パトロール (安定モード)</h2>
         <div className="flex gap-2 mb-4">
           <input value={url} onChange={e=>setUrl(e.target.value)} disabled={status==='running'||status==='checking'} className="flex-1 p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="ショップURL (例: https://www.rakuten.co.jp/shop-sample)" />
           {status === 'idle' || status === 'completed' || status === 'ready' ? (
@@ -479,8 +472,7 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
     setStat(p=>({...p, total:sList.length, sid}));
     addLog("🚀 一括パトロール開始");
 
-    // 高速化: 5キーあれば15並列以上
-    const BATCH = Math.min(config.apiKeys.length * 4, 20);
+    const BATCH = Math.min(config.apiKeys.length * 3, 20);
 
     for(let i=0; i<sList.length; i++) {
       if(stopRef.current) break;
@@ -517,7 +509,6 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
             if(stopRef.current) break;
             const b = d.products.slice(j, j+BATCH);
             
-            // 複数のキーを使って並列処理 (直接通信)
             const results = await Promise.all(b.map(async x => {
                 try {
                     return await analyzeItemRisk({productName:x.name, imageUrl:x.imageUrl}, config.apiKeys);
@@ -529,7 +520,6 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
             const res = b.map((x,k)=>({...x, ...results[k], risk:results[k].risk_level, isCritical:results[k].is_critical}));
             shopI=[...shopI,...res];
             
-            // 待機時間を短縮
             await new Promise(r=>setTimeout(r, 500));
           }
           
@@ -568,7 +558,7 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
       <div className="bg-slate-900 text-white p-6 rounded-2xl shadow-lg flex-shrink-0 relative overflow-hidden">
         <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500 rounded-full blur-3xl opacity-10 pointer-events-none translate-x-1/2 -translate-y-1/2"></div>
         <div className="flex justify-between mb-4 relative z-10">
-          <div><h2 className="text-xl font-bold flex items-center gap-2"><Moon className="w-5 h-5 text-yellow-400"/> 一括夜間パトロール (高速モード)</h2></div>
+          <div><h2 className="text-xl font-bold flex items-center gap-2"><Moon className="w-5 h-5 text-yellow-400"/> 一括夜間パトロール (安定モード)</h2></div>
           <div className="text-right"><div className="text-2xl font-bold font-mono text-blue-400">{stat.items.toLocaleString()}</div><div className="text-[10px] text-slate-400">チェック済み商品数</div></div>
         </div>
         {proc ? (
@@ -642,16 +632,16 @@ const SettingsView = ({ config, setConfig, addToast }) => {
             </div>
             <div className="relative">
                 <textarea value={k} onChange={e=>setK(e.target.value)} className="w-full p-3 border border-slate-200 rounded-lg h-32 text-xs font-mono focus:ring-2 focus:ring-slate-200 outline-none leading-loose" placeholder="Gemini APIキーを入力してください"/>
-                <div className="absolute top-3 right-3 flex flex-col gap-2">
+                <div className="absolute top-3 right-3 flex flex-col gap-2 pointer-events-none">
                     {k.split('\n').map((_, i) => keyStatus[i] && (
-                        <div key={i} className={`text-[10px] px-2 py-0.5 rounded font-bold flex items-center gap-1 ${keyStatus[i].ok ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                        <div key={i} className={`text-[10px] px-2 py-0.5 rounded font-bold flex items-center gap-1 shadow-sm ${keyStatus[i].ok ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
                             {keyStatus[i].ok ? <Wifi className="w-3 h-3"/> : <WifiOff className="w-3 h-3"/>}
                             {keyStatus[i].ok ? 'OK' : `ERR(${keyStatus[i].status})`}
                         </div>
                     ))}
                 </div>
             </div>
-            <p className="text-[10px] text-slate-400 mt-1">※自動的に負荷分散を行い、超高速で処理します。</p>
+            <p className="text-[10px] text-slate-400 mt-1">※複数のキーを登録すると、自動的に負荷分散を行い高速化・安定化します。</p>
         </div>
         <div><label className="text-xs font-bold text-slate-500 mb-1 block">Rakuten App ID</label><input value={config.rakutenAppId} onChange={e=>setConfig({...config, rakutenAppId:e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-slate-200 outline-none"/></div>
         <div><label className="text-xs font-bold text-slate-500 mb-1 block">Firebase Config JSON</label><textarea value={config.firebaseJson} onChange={e=>setConfig({...config, firebaseJson:e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg h-24 text-xs font-mono focus:ring-2 focus:ring-slate-200 outline-none" placeholder='{"apiKey": "...", ...}'/></div>
