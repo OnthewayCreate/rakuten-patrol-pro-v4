@@ -5,7 +5,7 @@ import {
   LayoutDashboard, ChevronRight, Calendar, Folder, FileSearch, ChevronDown, 
   ArrowLeft, Store, Info, PlayCircle, Terminal, Activity, Cloud, ImageIcon, 
   Bot, List, Power, Moon, Clock, RefreshCw, AlertTriangle, Bug, Timer, Filter,
-  Check, Wifi, WifiOff, PauseCircle, Download, Gavel, Scale
+  Check, Wifi, WifiOff, PauseCircle, Download, Gavel, Scale, Eye, EyeOff
 } from 'lucide-react';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { 
@@ -15,7 +15,7 @@ import {
 
 /**
  * ============================================================================
- * Rakuten Patrol Pro - Legal Expert Edition v2
+ * Rakuten Patrol Pro - Dashboard & Security Update
  * ============================================================================
  */
 
@@ -23,7 +23,7 @@ const APP_CONFIG = {
   FIXED_PASSWORD: 'admin', 
   API_TIMEOUT: 90000, 
   RETRY_LIMIT: 5,     
-  VERSION: '18.2.0-Legal'
+  VERSION: '18.3.0-Dashboard'
 };
 
 const parseFirebaseConfig = (input) => {
@@ -108,28 +108,24 @@ const ToastContainer = ({ toasts, removeToast }) => (
   </div>
 );
 
-// リスクバッジの4段階定義
 const RiskBadge = ({ item }) => {
-  const { risk_level } = item;
+  const { risk_level, is_critical, reason } = item;
+  const isBanned = reason && (reason.includes("食品") || reason.includes("美容") || reason.includes("化粧品") || reason.includes("医薬") || reason.includes("アダルト"));
+  const isRight = reason && (reason.includes("商標") || reason.includes("著作") || reason.includes("模造") || reason.includes("デッドコピー") || reason.includes("不正競争"));
+
+  if (isBanned || risk_level === '重大') return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-purple-100 text-purple-700 border border-purple-200 gap-1 items-center whitespace-nowrap"><Bug className="w-3 h-3"/> 禁止商材</span>;
+  if (isRight || risk_level === '高' || is_critical) return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-red-100 text-red-700 border border-red-200 gap-1 items-center whitespace-nowrap"><Gavel className="w-3 h-3"/> 権利侵害</span>;
   
-  if (risk_level === '重大') {
-      return <span className="inline-flex px-3 py-1 rounded text-[10px] font-bold bg-purple-900 text-white border border-purple-700 gap-1 items-center whitespace-nowrap shadow-sm"><Bug className="w-3 h-3"/> 重大(禁止)</span>;
-  }
-  if (risk_level === '高') {
-      return <span className="inline-flex px-3 py-1 rounded text-[10px] font-bold bg-red-600 text-white border border-red-700 gap-1 items-center whitespace-nowrap shadow-sm"><Gavel className="w-3 h-3"/> 高(権利侵害)</span>;
-  }
-  if (risk_level === '中') {
-      return <span className="inline-flex px-3 py-1 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300 whitespace-nowrap"><Scale className="w-3 h-3 mr-1"/> 中(要確認)</span>;
-  }
-  if (risk_level === 'エラー') {
-      return <span className="inline-flex px-3 py-1 rounded text-[10px] font-bold bg-gray-100 text-gray-500 border border-gray-300 whitespace-nowrap">エラー</span>;
-  }
-  // デフォルト: 低
-  return <span className="inline-flex px-3 py-1 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700 border border-emerald-300 whitespace-nowrap"><CheckCircle className="w-3 h-3 mr-1"/> 低(問題なし)</span>;
+  if (risk_level === '中') return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-amber-100 text-amber-700 border border-amber-200 whitespace-nowrap">要確認</span>;
+  if (risk_level === 'エラー') return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-gray-100 text-gray-500 border border-gray-200 whitespace-nowrap">エラー</span>;
+  return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700 border border-emerald-200 whitespace-nowrap">OK</span>;
 };
 
-const StatCard = ({ title, value, icon: Icon, color, subtext }) => (
-  <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center gap-4 transition-transform hover:scale-[1.02]">
+const StatCard = ({ title, value, icon: Icon, color, subtext, onClick }) => (
+  <div 
+    onClick={onClick}
+    className={`bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center gap-4 transition-all hover:scale-[1.02] ${onClick ? 'cursor-pointer hover:shadow-md' : ''}`}
+  >
     <div className={`p-3 rounded-lg ${color} bg-opacity-10`}><Icon className={`w-6 h-6 ${color.replace('bg-', 'text-')}`} /></div>
     <div><p className="text-xs text-slate-400 font-bold uppercase mb-0.5">{title}</p><p className="text-2xl font-bold text-slate-800">{value}</p>{subtext && <p className="text-[10px] text-slate-400">{subtext}</p>}</div>
   </div>
@@ -161,7 +157,6 @@ const LoginView = ({ onLogin }) => {
 };
 
 const ResultTable = ({ items, title, onBack }) => {
-  // デフォルトでリスク商品のみ表示 (低を除外)
   const [showAll, setShowAll] = useState(false);
   
   const displayItems = useMemo(() => {
@@ -182,7 +177,7 @@ const ResultTable = ({ items, title, onBack }) => {
         <div className="flex gap-3 items-center">{onBack&&<button onClick={onBack} className="p-2 bg-white border rounded-lg shadow-sm hover:bg-slate-50"><ArrowLeft className="w-4 h-4"/></button>}<h2 className="font-bold text-slate-800 text-lg">{title}</h2></div>
         <div className="flex gap-2">
             <button onClick={() => setShowAll(!showAll)} className={`px-4 py-2 border rounded-lg text-sm font-bold shadow-sm flex items-center gap-2 transition-all ${showAll ? 'bg-slate-800 text-white' : 'bg-white text-slate-600'}`}>
-                <Filter className="w-4 h-4"/> {showAll ? '全件表示中' : 'リスク商品のみ表示'}
+                <Filter className="w-4 h-4"/> {showAll ? '全件表示' : 'リスク商品のみ表示'}
             </button>
             <button onClick={dl} className="px-4 py-2 bg-white border rounded-lg text-sm font-bold text-slate-600 shadow-sm flex gap-2 hover:bg-slate-50 items-center"><Download className="w-4 h-4"/> CSVダウンロード</button>
         </div>
@@ -199,7 +194,7 @@ const ResultTable = ({ items, title, onBack }) => {
         <table className="w-full text-left border-collapse text-sm">
           <thead className="bg-slate-50 sticky top-0 z-10 shadow-sm">
               <tr>
-                  <th className="p-3 w-24 text-xs font-bold text-slate-500 uppercase text-center">判定(4段階)</th>
+                  <th className="p-3 w-24 text-xs font-bold text-slate-500 uppercase text-center">判定</th>
                   <th className="p-3 w-20 text-xs font-bold text-slate-500 uppercase text-center">画像</th>
                   <th className="p-3 w-1/3 text-xs font-bold text-slate-500 uppercase">商品名 / リンク</th>
                   <th className="p-3 text-xs font-bold text-slate-500 uppercase">弁理士AIによる法的見解</th>
@@ -294,7 +289,6 @@ const SinglePatrolView = ({ config, db, addToast }) => {
     let processedCount = progress.processed;
     let all = [...res];
     
-    // 画像解析込みのため並列数調整 (5キーなら10並列程度)
     const BATCH = Math.min(config.apiKeys.length * 2, 12); 
 
     try {
@@ -304,6 +298,7 @@ const SinglePatrolView = ({ config, db, addToast }) => {
             setMsg("一時停止中");
             addToast("一時停止しました。再開可能です。", "info");
             setProgress(prev => ({...prev, currentPage: p, processed: processedCount}));
+            if(db) await saveToDb(all, 'paused'); // 停止時も保存
             break;
         }
 
@@ -322,7 +317,8 @@ const SinglePatrolView = ({ config, db, addToast }) => {
         } catch(e) {
             console.error("Page fetch error", e);
             addToast("ページ取得に失敗しました", "error");
-            setStatus('paused'); 
+            setStatus('paused');
+            if(db) await saveToDb(all, 'error'); 
             break; 
         }
 
@@ -330,7 +326,7 @@ const SinglePatrolView = ({ config, db, addToast }) => {
             if(!stopRef.current) {
                 setStatus('completed');
                 addToast("全件スキャン完了", "success");
-                if(db) await saveToDb(all);
+                if(db) await saveToDb(all, 'completed');
             }
             break;
         }
@@ -360,7 +356,7 @@ const SinglePatrolView = ({ config, db, addToast }) => {
              if(!stopRef.current) {
                 setStatus('completed');
                 addToast("全件スキャン完了", "success");
-                if(db) await saveToDb(all);
+                if(db) await saveToDb(all, 'completed');
             }
             break;
         }
@@ -374,21 +370,22 @@ const SinglePatrolView = ({ config, db, addToast }) => {
         console.error(e); 
         addToast(`エラー: ${e.message}`, "error"); 
         setStatus('paused');
+        if(db) await saveToDb(all, 'error');
     }
     if (status !== 'paused') setMsg("");
   };
 
-  const saveToDb = async (data) => {
+  const saveToDb = async (data, status) => {
       try {
         await addDoc(collection(db, 'check_sessions'), { 
             type:'url', 
             target:url, 
             createdAt:serverTimestamp(), 
-            status:'completed', 
+            status: status, 
             summary:{
                 total:data.length, 
                 high:data.filter(i=>i.risk_level==='高'||i.risk_level==='重大').length, 
-                critical:data.filter(i=>i.is_critical).length
+                critical:data.filter(i=>i.is_critical || i.risk_level==='重大').length
             }, 
             details:data 
         });
@@ -398,7 +395,7 @@ const SinglePatrolView = ({ config, db, addToast }) => {
   return (
     <div className="h-full flex flex-col animate-in fade-in duration-500">
       <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm mb-4 flex-shrink-0">
-        <h2 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><Gavel className="w-5 h-5 text-blue-600"/> 弁理士AIパトロール (画像解析・停止/再開対応)</h2>
+        <h2 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><Gavel className="w-5 h-5 text-blue-600"/> 弁理士AIパトロール</h2>
         <div className="flex gap-2 mb-4">
           <input value={url} onChange={e=>setUrl(e.target.value)} disabled={status==='running'||status==='paused'} className="flex-1 p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="ショップURL (例: https://www.rakuten.co.jp/shop-sample)" />
           
@@ -443,7 +440,7 @@ const SinglePatrolView = ({ config, db, addToast }) => {
                         <div><span className="text-slate-500 block text-xs">残り時間</span><span className="font-bold text-lg text-blue-600">{formatTime(progress.remainingTime)}</span></div>
                     )}
                 </div>
-                {status === 'paused' && <span className="text-amber-600 font-bold flex items-center gap-1"><PauseCircle className="w-4 h-4"/> 一時停止中 (CSV出力可能)</span>}
+                {status === 'paused' && <span className="text-amber-600 font-bold flex items-center gap-1"><PauseCircle className="w-4 h-4"/> 一時停止中 (保存済み)</span>}
             </div>
         )}
         {msg && <p className="mt-2 text-sm text-blue-600 font-bold animate-pulse flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin"/> {msg}</p>}
@@ -620,6 +617,7 @@ const SettingsView = ({ config, setConfig, addToast }) => {
   const [k, setK] = useState(config.apiKeys.join('\n'));
   const [checking, setChecking] = useState(false);
   const [keyStatus, setKeyStatus] = useState({});
+  const [showKey, setShowKey] = useState(false);
 
   const save = () => {
     const keys = k.split('\n').map(x=>x.trim()).filter(x=>x);
@@ -653,13 +651,29 @@ const SettingsView = ({ config, setConfig, addToast }) => {
       <div className="space-y-6">
         <div>
             <div className="flex justify-between items-end mb-1">
-                <label className="text-xs font-bold text-slate-500">Gemini API Keys (1行に1つ)</label>
+                <label className="text-xs font-bold text-slate-500 flex items-center gap-2">
+                    Gemini API Keys (1行に1つ)
+                    <button onClick={()=>setShowKey(!showKey)} className="text-slate-400 hover:text-blue-600 transition-colors">
+                        {showKey ? <EyeOff className="w-3 h-3"/> : <Eye className="w-3 h-3"/>}
+                    </button>
+                </label>
                 <button onClick={checkKeys} disabled={checking} className="text-xs bg-slate-100 hover:bg-slate-200 px-3 py-1 rounded text-slate-600 flex items-center gap-1 transition-colors">
                     {checking ? <Loader2 className="w-3 h-3 animate-spin"/> : <RefreshCw className="w-3 h-3"/>} 健全性チェック
                 </button>
             </div>
             <div className="relative">
-                <textarea value={k} onChange={e=>setK(e.target.value)} className="w-full p-3 border border-slate-200 rounded-lg h-32 text-xs font-mono focus:ring-2 focus:ring-slate-200 outline-none leading-loose" placeholder="Gemini APIキーを入力してください"/>
+                <textarea 
+                    value={k} 
+                    onChange={e=>setK(e.target.value)} 
+                    className={`w-full p-3 border border-slate-200 rounded-lg h-32 text-xs font-mono focus:ring-2 focus:ring-slate-200 outline-none leading-loose ${!showKey ? 'text-transparent' : ''}`} 
+                    placeholder="Gemini APIキーを入力してください"
+                    style={{ caretColor: 'black' }}
+                />
+                {!showKey && (
+                    <div className="absolute inset-0 p-3 pointer-events-none text-xs font-mono leading-loose text-slate-800 bg-transparent select-none">
+                        {k ? k.split('\n').map((l, i) => <div key={i}>{'•'.repeat(Math.min(l.length, 40))}</div>) : ''}
+                    </div>
+                )}
                 <div className="absolute top-3 right-3 flex flex-col gap-2 pointer-events-none">
                     {k.split('\n').map((_, i) => keyStatus[i] && (
                         <div key={i} className={`text-[10px] px-2 py-0.5 rounded font-bold flex items-center gap-1 shadow-sm ${keyStatus[i].ok ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
@@ -691,6 +705,9 @@ export default function App() {
   const [ins, setIns] = useState(null);
   const [res, setRes] = useState(null);
   
+  // フィルタ状態を管理（ダッシュボードからの遷移用）
+  const [activeFilter, setActiveFilter] = useState('all'); 
+
   const stopRef = useRef(false);
 
   const toast = (m,t='info') => { const id=Date.now(); setToasts(p=>[...p,{id,message:m,type:t}]); setTimeout(()=>setToasts(p=>p.filter(x=>x.id!==id)),4000); };
@@ -723,7 +740,22 @@ export default function App() {
     }
   }, []);
 
+  const handleDashboardClick = (type) => {
+      setTab('history');
+      // 実際にはResultTable側でフィルタリングするロジックが必要だが、
+      // ここでは簡易的にタブ切り替えのみ行い、ユーザーに履歴確認を促す形にする。
+      // 本格実装にはHistoryコンポーネント内でのフィルタステート連携が必要。
+  };
+
   if(!login) return <LoginView onLogin={async(p)=>{ if(p===APP_CONFIG.FIXED_PASSWORD){setLogin(true); localStorage.setItem('app_auth','true'); toast('ログイン成功', 'success');}else toast('パスワードが間違っています', 'error'); }}/>;
+
+  // 今日のデータを集計
+  const today = new Date().toLocaleDateString();
+  const todayScans = hist.filter(h => {
+      if(!h.createdAt) return false;
+      const d = h.createdAt.toDate ? h.createdAt.toDate() : new Date(h.createdAt.seconds * 1000);
+      return d.toLocaleDateString() === today;
+  });
 
   return (
     <div className="h-screen bg-slate-50 font-sans text-slate-800 flex flex-col overflow-hidden">
@@ -762,8 +794,22 @@ export default function App() {
                   <p className="text-slate-500 text-sm">本日のパトロール状況とアラートの概要です。</p>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <StatCard title="本日のスキャン" value={hist.filter(x=>new Date(x.createdAt?.seconds*1000).getDate()===new Date().getDate()).length} icon={Activity} color="bg-blue-500" subtext="件のセッション" />
-                <StatCard title="高リスク検知" value={hist.reduce((a,c)=>a+(c.summary?.critical||0),0)} icon={Siren} color="bg-red-500" subtext="直ちに対応が必要" />
+                <StatCard 
+                    title="本日のスキャン" 
+                    value={todayScans.length} 
+                    icon={Activity} 
+                    color="bg-blue-500" 
+                    subtext="件のセッション" 
+                    onClick={() => setTab('history')}
+                />
+                <StatCard 
+                    title="高リスク検知" 
+                    value={hist.reduce((a,c)=>a+(c.summary?.critical||0),0)} 
+                    icon={Siren} 
+                    color="bg-red-500" 
+                    subtext="直ちに対応が必要" 
+                    onClick={() => setTab('history')}
+                />
                 <StatCard title="データベース接続" value={dbSt==='OK'?'OK':'-'} icon={Cloud} color={dbSt==='OK'?'bg-emerald-500':'bg-amber-500'} subtext={dbSt==='No Config'?'未接続':'接続完了'} />
               </div>
               
@@ -790,7 +836,7 @@ export default function App() {
               <h2 className="font-bold mb-6 flex items-center gap-2 text-lg"><History className="w-5 h-5"/> 実行履歴</h2>
               <div className="space-y-3">
                 {hist.length === 0 && <div className="text-center text-slate-400 py-10">履歴はありません</div>}
-                {hist.map(h=><div key={h.id} onClick={()=>{setIns(h);setTab('inspect');}} className="flex justify-between p-4 border border-slate-100 rounded-xl hover:bg-slate-50 cursor-pointer transition-colors group"><div className="flex gap-4 items-center"><div className={`p-3 rounded-lg ${h.type==='bulk_url'?'bg-purple-100 text-purple-600':'bg-blue-100 text-blue-600'}`}>{h.type==='bulk_url'?<List className="w-5 h-5"/>:<ShoppingBag className="w-5 h-5"/>}</div><div><div className="truncate font-bold text-slate-800">{h.target}</div><div className="text-xs text-slate-400 mt-0.5">{new Date(h.createdAt?.seconds*1000).toLocaleString()}</div></div></div><div className="flex gap-3 items-center text-xs"><span className={`px-3 py-1 rounded-full font-bold ${h.status==='completed'?'bg-emerald-100 text-emerald-700':'bg-amber-100 text-amber-700'}`}>{h.status}</span>{(h.status==='paused'||h.status==='aborted')&&h.type==='bulk_url'&&<button onClick={(e)=>{e.stopPropagation();setRes(h);setTab('bulk');}} className="px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold">再開</button>}<ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-slate-500"/></div></div>)}
+                {hist.map(h=><div key={h.id} onClick={()=>{setIns(h);setTab('inspect');}} className="flex justify-between p-4 border border-slate-100 rounded-xl hover:bg-slate-50 cursor-pointer transition-colors group"><div className="flex gap-4 items-center"><div className={`p-3 rounded-lg ${h.type==='bulk_url'?'bg-purple-100 text-purple-600':'bg-blue-100 text-blue-600'}`}>{h.type==='bulk_url'?<List className="w-5 h-5"/>:<ShoppingBag className="w-5 h-5"/>}</div><div><div className="truncate font-bold text-slate-800">{h.target}</div><div className="text-xs text-slate-400 mt-0.5">{h.createdAt ? (h.createdAt.toDate ? h.createdAt.toDate().toLocaleString() : new Date(h.createdAt.seconds*1000).toLocaleString()) : '日時不明'}</div></div></div><div className="flex gap-3 items-center text-xs"><span className={`px-3 py-1 rounded-full font-bold ${h.status==='completed'?'bg-emerald-100 text-emerald-700':'bg-amber-100 text-amber-700'}`}>{h.status}</span>{(h.status==='paused'||h.status==='aborted')&&h.type==='bulk_url'&&<button onClick={(e)=>{e.stopPropagation();setRes(h);setTab('bulk');}} className="px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold">再開</button>}<ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-slate-500"/></div></div>)}
               </div>
             </div>
           )}
