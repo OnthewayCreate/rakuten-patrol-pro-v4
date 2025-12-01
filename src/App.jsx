@@ -23,7 +23,7 @@ const APP_CONFIG = {
   FIXED_PASSWORD: 'admin', 
   API_TIMEOUT: 90000, 
   RETRY_LIMIT: 5,     
-  VERSION: '16.3.0-Turbo'
+  VERSION: '16.3.1-Debug'
 };
 
 // NGカテゴリ・キーワード定義
@@ -54,8 +54,6 @@ const checkRestrictedCategory = (productName) => {
 async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
   const restrictedReason = checkRestrictedCategory(itemData.productName);
   
-  // ロードバランシング: 初回からランダムにキーを選択し、リトライ時はシフトする
-  // これにより、5つのキーがある場合、最初から負荷が1/5に分散される
   const keyIndex = (Math.floor(Math.random() * apiKeys.length) + retryCount) % apiKeys.length;
   const currentKey = apiKeys.length > 0 ? apiKeys[keyIndex] : '';
 
@@ -73,17 +71,20 @@ async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
 
     if (res.status === 429 || res.status >= 500) {
       if (retryCount < APP_CONFIG.RETRY_LIMIT) {
-        // エクスポネンシャルバックオフ + ランダムジッター
         const waitTime = Math.pow(2, retryCount) * 1000 + (Math.random() * 1000);
         await new Promise(resolve => setTimeout(resolve, waitTime));
-        // 再帰呼び出し（次は別のキーが選ばれる可能性が高い）
         return analyzeItemRisk(itemData, apiKeys, retryCount + 1);
       } else { 
         throw new Error("API混雑 (全キー混雑)"); 
       }
     }
     
-    if (!res.ok) throw new Error(`API:${res.status}`);
+    // エラーレスポンスの処理
+    if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.reason || `API Error: ${res.status}`);
+    }
+    
     const aiResult = await res.json();
 
     if (restrictedReason) {
@@ -107,10 +108,15 @@ async function checkApiKeyHealth(apiKey) {
             body: JSON.stringify({ apiKey, isTest: true }), // テストモード
             signal: controller.signal
         });
-        if (res.ok) return { ok: true, status: 200 };
-        return { ok: false, status: res.status };
+        
+        if (res.ok) return { ok: true, status: 200, msg: 'OK' };
+        
+        // エラー詳細を取得
+        const errData = await res.json().catch(()=>({}));
+        const msg = errData.reason || res.statusText;
+        return { ok: false, status: res.status, msg: msg };
     } catch (e) {
-        return { ok: false, status: 'Error' };
+        return { ok: false, status: 'ERR', msg: e.message };
     }
 }
 
@@ -277,8 +283,6 @@ const SinglePatrolView = ({ config, db, addToast }) => {
         
         const count = d.count || 0;
         
-        // 推定時間の最適化：並列数に応じて計算
-        // キーが5個あれば、バッチ15件を約2秒で処理と仮定 -> 7.5件/秒
         const concurrency = Math.max(1, config.apiKeys.length * 2);
         const estTime = Math.ceil(count / concurrency * 1.2); 
 
@@ -306,8 +310,6 @@ const SinglePatrolView = ({ config, db, addToast }) => {
     let processedCount = 0;
     let all = [];
     
-    // パフォーマンス向上: APIキーの数に応じて並列数を増やす
-    // キー1つにつき並列数3まで安全と仮定し、最大15並列（5キーの場合）
     const BATCH = Math.min(config.apiKeys.length * 3, 20); 
 
     try {
@@ -338,7 +340,6 @@ const SinglePatrolView = ({ config, db, addToast }) => {
           if(stopRef.current) break;
           const batchItems = d.products.slice(i, i+BATCH);
           
-          // 並列リクエスト実行
           const results = await Promise.all(batchItems.map(b => analyzeItemRisk({productName:b.name, imageUrl:b.imageUrl}, config.apiKeys)));
           const batchResults = batchItems.map((b,x) => ({...b, ...results[x], risk: results[x].risk_level, isCritical: results[x].is_critical}));
           
@@ -353,7 +354,6 @@ const SinglePatrolView = ({ config, db, addToast }) => {
           
           setProgress({ processed: processedCount, remainingTime: remTime, startTime });
           
-          // 待機時間を短縮（負荷分散されているため）
           await new Promise(r=>setTimeout(r, 800));
         }
         
