@@ -6,17 +6,17 @@ import {
   ArrowLeft, Store, Info, PlayCircle, Terminal, Activity, Cloud, ImageIcon, 
   Bot, List, Power, Moon, Clock, RefreshCw, AlertTriangle, Bug, Timer, Filter,
   Check, Wifi, WifiOff, PauseCircle, Download, Gavel, Scale, Eye, EyeOff, FastForward,
-  Layers, RotateCcw
+  Layers, RotateCcw, StopCircle
 } from 'lucide-react';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { 
   getFirestore, collection, addDoc, query, orderBy, limit, onSnapshot, 
-  serverTimestamp, where, getDocs, deleteDoc, doc, updateDoc, getDoc 
+  serverTimestamp, where, getDocs, deleteDoc, doc, updateDoc, getDoc, arrayUnion
 } from 'firebase/firestore';
 
 /**
  * ============================================================================
- * Rakuten Patrol Pro - Error Recovery Edition (v19.2)
+ * Rakuten Patrol Pro - Stability & History Fix Edition (v19.3)
  * ============================================================================
  */
 
@@ -24,7 +24,7 @@ const APP_CONFIG = {
   FIXED_PASSWORD: 'admin', 
   API_TIMEOUT: 45000, 
   RETRY_LIMIT: 3,     
-  VERSION: '19.2.0-Recovery'
+  VERSION: '19.3.0-Stable'
 };
 
 const parseFirebaseConfig = (input) => {
@@ -35,6 +35,14 @@ const parseFirebaseConfig = (input) => {
       return JSON.parse(jsonStr);
     } catch (e2) { return null; }
   }
+};
+
+const STATUS_MAP = {
+    'processing': '処理中',
+    'paused': '一時停止',
+    'completed': '完了',
+    'error': 'エラー',
+    'aborted': '中断'
 };
 
 // --- プログレスバー ---
@@ -56,7 +64,7 @@ const ProgressBar = ({ current, total, label, color = "bg-blue-600", subLabel })
   );
 };
 
-// --- API Wrapper (Direct & Fast) ---
+// --- API Wrapper ---
 async function callGeminiDirectly(apiKey, prompt, isTest = false) {
     const cleanKey = apiKey.trim().replace(/[\r\n\s]/g, '');
     const model = 'gemini-2.5-flash'; 
@@ -69,9 +77,7 @@ async function callGeminiDirectly(apiKey, prompt, isTest = false) {
         const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                contents: [{ parts: [{ text: prompt }] }]
-            }),
+            body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
             signal: controller.signal
         });
         clearTimeout(timeoutId);
@@ -202,7 +208,6 @@ const LoginView = ({ onLogin }) => {
 
 const ResultTable = ({ items, title, onBack }) => {
   const [showAll, setShowAll] = useState(false);
-  
   const displayItems = useMemo(() => {
     if (showAll) return items.slice(0, 500); 
     return items.filter(i => i.risk_level !== '低' && i.risk_level !== 'Low');
@@ -256,6 +261,7 @@ const SinglePatrolView = ({ config, db, addToast }) => {
   const [progress, setProgress] = useState({ processed: 0, remainingTime: 0, startTime: 0, currentPage: 1 });
   const [res, setRes] = useState([]);
   const [msg, setMsg] = useState('');
+  const [sessionId, setSessionId] = useState(null); // セッションIDを保持
   const stopRef = useRef(false);
 
   const errorCount = useMemo(() => res.filter(i => i.risk_level === 'エラー').length, [res]);
@@ -282,17 +288,37 @@ const SinglePatrolView = ({ config, db, addToast }) => {
   };
 
   const start = async () => {
-    setStatus('running'); setMsg("高速パトロール開始..."); stopRef.current = false;
+    setStatus('running'); setMsg("パトロール開始..."); stopRef.current = false;
     const startTime = Date.now();
     let p = progress.currentPage;
     let processedCount = progress.processed;
     let all = [...res];
+    let currentSessionId = sessionId;
+
+    // 初回のみDBドキュメント作成
+    if (db && !currentSessionId) {
+        try {
+            const docRef = await addDoc(collection(db, 'check_sessions'), { 
+                type: 'url', target: url, createdAt: serverTimestamp(), status: 'processing', 
+                summary: { total: 0, high: 0, critical: 0 }, details: [] 
+            });
+            currentSessionId = docRef.id;
+            setSessionId(currentSessionId);
+        } catch(e) { console.error("DB Init Error", e); }
+    }
     
     const BATCH = Math.min(config.apiKeys.length * 10, 60); 
 
     try {
       while(true) {
-        if(stopRef.current) { setStatus('paused'); setMsg("一時停止中"); addToast("一時停止", "info"); setProgress(prev=>({...prev, currentPage:p, processed:processedCount})); if(db) await saveToDb(res,'paused'); break; }
+        if(stopRef.current) { 
+            setStatus('paused'); 
+            setMsg("一時停止中"); 
+            addToast("一時停止しました", "info"); 
+            setProgress(prev=>({...prev, currentPage:p, processed:processedCount})); 
+            if(db && currentSessionId) await saveToDb(currentSessionId, all, 'paused'); 
+            break; 
+        }
 
         setMsg(`ページ ${p} 解析中... (並列数:${BATCH})`);
         const u = new URL('/api/rakuten', window.location.origin);
@@ -312,17 +338,19 @@ const SinglePatrolView = ({ config, db, addToast }) => {
         }
 
         if(!d.products?.length) {
-            if(!stopRef.current) { setStatus('completed'); addToast("完了", "success"); if(db) await saveToDb(res,'completed'); }
+            if(!stopRef.current) { 
+                setStatus('completed'); 
+                addToast("完了", "success"); 
+                if(db && currentSessionId) await saveToDb(currentSessionId, all, 'completed'); 
+            }
             break;
         }
         
         for(let i=0; i<d.products.length; i+=BATCH) {
           if(stopRef.current) break;
           const batchItems = d.products.slice(i, i+BATCH);
-          
           const results = await Promise.all(batchItems.map(b => analyzeItemRisk({productName:b.name, imageUrl:b.imageUrl}, config.apiKeys)));
           const batchResults = batchItems.map((b,x) => ({...b, ...results[x]}));
-          
           all = [...all, ...batchResults];
           setRes(prev => [...prev, ...batchResults]);
           
@@ -330,68 +358,80 @@ const SinglePatrolView = ({ config, db, addToast }) => {
           const elapsed = (Date.now() - startTime) / 1000;
           const speed = processedCount / (elapsed || 1);
           const remainingItems = meta.count - processedCount;
-          
           setProgress({ processed: processedCount, remainingTime: speed > 0 ? remainingItems/speed : 0, startTime, currentPage: p });
         }
         
         if (processedCount >= meta.count) {
-             if(!stopRef.current) { setStatus('completed'); addToast("完了", "success"); if(db) await saveToDb(res,'completed'); }
+             if(!stopRef.current) { 
+                 setStatus('completed'); 
+                 addToast("完了", "success"); 
+                 if(db && currentSessionId) await saveToDb(currentSessionId, all, 'completed'); 
+            }
             break;
         }
         if(stopRef.current) continue;
         p++; if(p > 1000) break;
       }
-    } catch(e){ console.error(e); addToast("エラー発生", "error"); setStatus('paused'); if(db) await saveToDb(res,'error'); }
+    } catch(e){ 
+        console.error(e); 
+        addToast("エラー発生", "error"); 
+        setStatus('paused'); 
+        if(db && currentSessionId) await saveToDb(currentSessionId, all, 'error'); 
+    }
     if (status !== 'paused') setMsg("");
   };
 
   const retryErrors = async () => {
-    // エラーのアイテム（index付き）を抽出
     const errorIndices = res.map((item, index) => item.risk_level === 'エラー' ? index : -1).filter(i => i !== -1);
-    
     if (errorIndices.length === 0) return addToast("エラーの商品はありません", "info");
 
-    setStatus('running'); 
-    setMsg(`エラー商品 ${errorIndices.length}件を再チェック中...`);
-    stopRef.current = false;
-
+    setStatus('running'); setMsg(`再チェック中...`); stopRef.current = false;
     const BATCH = Math.min(config.apiKeys.length * 5, 20);
     
-    // バッチ処理
+    let updatedRes = [...res];
+
     for (let i = 0; i < errorIndices.length; i += BATCH) {
         if (stopRef.current) break;
-        
         const currentBatchIndices = errorIndices.slice(i, i + BATCH);
         const batchItems = currentBatchIndices.map(idx => res[idx]);
-
-        // 並列リクエスト
         const results = await Promise.all(batchItems.map(b => analyzeItemRisk({productName:b.name, imageUrl:b.imageUrl}, config.apiKeys)));
 
-        // 結果反映
-        setRes(prev => {
-            const next = [...prev];
-            currentBatchIndices.forEach((resIdx, k) => {
-                next[resIdx] = { ...next[resIdx], ...results[k] };
-            });
-            return next;
+        currentBatchIndices.forEach((resIdx, k) => {
+            updatedRes[resIdx] = { ...updatedRes[resIdx], ...results[k] };
         });
-
+        setRes([...updatedRes]);
         await new Promise(r => setTimeout(r, 500));
     }
 
     setStatus('completed');
     addToast("再チェック完了", "success");
     setMsg("");
-    if(db) await saveToDb(res, 'completed');
+    if(db && sessionId) await saveToDb(sessionId, updatedRes, 'completed');
   };
 
-  const saveToDb = async (data, st) => {
+  const finish = async () => {
+      stopRef.current = true;
+      if (db && sessionId) await saveToDb(sessionId, res, 'completed'); // 強制完了扱い
+      setStatus('idle');
+      setUrl('');
+      setRes([]);
+      setSessionId(null);
+      setProgress({ processed: 0, remainingTime: 0, startTime: 0, currentPage: 1 });
+      addToast("終了しました", "info");
+  };
+
+  const saveToDb = async (sid, data, st) => {
       const riskyItems = data.filter(i => i.risk_level !== '低' && i.risk_level !== 'Low');
       try {
-        await addDoc(collection(db, 'check_sessions'), { 
-            type:'url', target:url, createdAt:serverTimestamp(), status: st, 
-            summary:{ total:data.length, high:data.filter(i=>i.risk_level==='高'||i.risk_level==='重大').length, critical:data.filter(i=>i.is_critical).length }, 
-            details: riskyItems 
+        await updateDoc(doc(db, 'check_sessions', sid), { 
+            status: st, 
+            summary: { 
+                total: data.length, 
+                high: data.filter(i=>i.risk_level==='高'||i.risk_level==='重大').length, 
+                critical: data.filter(i=>i.is_critical).length 
+            }, 
+            details: riskyItems,
+            updatedAt: serverTimestamp()
         });
       } catch(e) { console.error('DB Save Error', e); }
   };
@@ -401,14 +441,18 @@ const SinglePatrolView = ({ config, db, addToast }) => {
       <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm mb-4 flex-shrink-0">
         <h2 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><FastForward className="w-5 h-5 text-blue-600"/> 超高速パトロール</h2>
         <div className="flex gap-2 mb-4">
-          <input value={url} onChange={e=>setUrl(e.target.value)} disabled={status==='running'||status==='paused'} className="flex-1 p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="ショップURL" />
-          
+          <input value={url} onChange={e=>setUrl(e.target.value)} disabled={status!=='idle'} className="flex-1 p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="ショップURL" />
           {status === 'idle' && <button onClick={checkShop} className="px-6 rounded-lg font-bold text-white bg-slate-600 hover:bg-slate-700 transition-colors flex items-center gap-2"><Search className="w-4 h-4"/> 調査</button>}
           {status === 'checking' && <button disabled className="px-6 rounded-lg font-bold text-white bg-slate-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin"/> ...</button>}
           {status === 'ready' && <button onClick={start} className="px-6 rounded-lg font-bold text-white bg-blue-600 hover:bg-blue-700 transition-colors flex items-center gap-2"><PlayCircle className="w-4 h-4"/> 開始</button>}
-          {status === 'running' && <button onClick={()=>stopRef.current=true} className="px-6 rounded-lg font-bold text-white bg-red-500 hover:bg-red-600 transition-colors flex items-center gap-2"><PauseCircle className="w-4 h-4"/> 停止</button>}
-          {status === 'paused' && <button onClick={start} className="px-6 rounded-lg font-bold text-white bg-green-600 hover:bg-green-700 transition-colors flex items-center gap-2"><PlayCircle className="w-4 h-4"/> 再開</button>}
-          {status === 'completed' && <button onClick={()=>{setStatus('idle'); setUrl(''); setRes([]);}} className="px-6 rounded-lg font-bold text-white bg-slate-600 hover:bg-slate-700 transition-colors">リセット</button>}
+          {status === 'running' && <button onClick={()=>stopRef.current=true} className="px-6 rounded-lg font-bold text-white bg-amber-500 hover:bg-amber-600 transition-colors flex items-center gap-2"><PauseCircle className="w-4 h-4"/> 停止</button>}
+          {status === 'paused' && (
+              <>
+                <button onClick={start} className="px-6 rounded-lg font-bold text-white bg-green-600 hover:bg-green-700 transition-colors flex items-center gap-2"><PlayCircle className="w-4 h-4"/> 再開</button>
+                <button onClick={finish} className="px-6 rounded-lg font-bold text-white bg-slate-600 hover:bg-slate-700 transition-colors flex items-center gap-2"><StopCircle className="w-4 h-4"/> 終了</button>
+              </>
+          )}
+          {status === 'completed' && <button onClick={finish} className="px-6 rounded-lg font-bold text-white bg-slate-600 hover:bg-slate-700 transition-colors">終了</button>}
         </div>
 
         {(status !== 'idle' && status !== 'checking') && (
@@ -440,7 +484,8 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
   const [proc, setProc] = useState(false);
   const [logs, setLogs] = useState([]);
   const [stat, setStat] = useState({ total:0, done:0, items:0, currentShopItems:0, currentShopTotal:0, shops:[], risks: 0 });
-  const [resultsMap, setResultsMap] = useState({}); // ショップID -> 結果配列 のマップ
+  const [resultsMap, setResultsMap] = useState({});
+  const [sessionId, setSessionId] = useState(null);
 
   useEffect(() => {
     if(resume) {
@@ -455,9 +500,13 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
   const save = async (sid, shops, sum, newD=[]) => {
     if(!db || !sid) return;
     try {
-      const { arrayUnion } = await import('firebase/firestore');
       const up = { shopList:shops, summary:sum, updatedAt:serverTimestamp() };
-      if(newD.length) { up.details = arrayUnion(...newD); }
+      if(newD.length) { 
+          // 配列結合を使う (FirestoreのarrayUnion)
+          // ただしデータ量が多い場合はサブコレクションや分割が必要だが、ここでは簡易的に配列へ
+          const { arrayUnion } = await import('firebase/firestore');
+          up.details = arrayUnion(...newD); 
+      }
       await updateDoc(doc(db,'check_sessions',sid), up);
     } catch(e){ console.error(e); }
   };
@@ -471,11 +520,22 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
       const a = document.createElement("a"); a.href=u; a.download=`bulk_report_${Date.now()}.csv`; a.click();
   };
 
+  const finish = async () => {
+      stopRef.current = true;
+      if (db && sessionId) await updateDoc(doc(db, 'check_sessions', sessionId), { status: 'completed', updatedAt: serverTimestamp() });
+      setProc(false);
+      setUrls('');
+      setLogs([]);
+      setSessionId(null);
+      setStat({ total:0, done:0, items:0, currentShopItems:0, currentShopTotal:0, shops:[], risks: 0 });
+      addToast("一括パトロール終了", "info");
+  };
+
   const run = async () => {
-    let sList = stat.shops, sid = stat.sid, totalI = stat.items;
+    let sList = stat.shops, sid = stat.sid || sessionId, totalI = stat.items;
     if(!config.apiKeys.length || !config.rakutenAppId) return addToast("設定不足", "error");
 
-    if(!resume) {
+    if(!resume && !proc) {
       const ul = urls.split('\n').map(u=>u.trim()).filter(u=>u.startsWith('http'));
       if(!ul.length) return addToast("URLなし", "error");
       sList = ul.map(u=>({url:u, status:'waiting', itemCount:0}));
@@ -484,6 +544,7 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
           try {
              const d = await addDoc(collection(db,'check_sessions'), { type:'bulk_url', target:`一括(${ul.length})`, createdAt:serverTimestamp(), status:'processing', shopList:sList, summary:{total:0, high:0, critical:0}, details:[] });
              sid = d.id;
+             setSessionId(sid);
           } catch(e){}
       }
     }
@@ -538,7 +599,6 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
           for(let j=0; j<d.products.length; j+=BATCH) {
             if(stopRef.current) break;
             const b = d.products.slice(j, j+BATCH);
-            
             const results = await Promise.all(b.map(async x => {
                 try { return await analyzeItemRisk({productName:x.name, imageUrl:x.imageUrl}, config.apiKeys); } catch(err) { return { risk_level: "エラー", reason: "解析失敗" }; }
             }));
@@ -548,31 +608,37 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
             
             processedInShop += b.length;
             setStat(prev => ({...prev, currentShopItems: processedInShop, items: prev.items + b.length}));
-            
-            // waitなし
           }
           
+          if(p%5===0) { 
+              sList[i].itemCount=shopI.length; 
+              await save(sid, sList, {total:totalI+shopI.length, high:0, critical:0}); 
+          }
           p++; if(p>300) { addLog("⚠️ ページ上限"); break; }
         }
         
         if(!stopRef.current) {
           sList[i].status='completed'; sList[i].itemCount=shopI.length; 
-          
           setResultsMap(prev => ({...prev, [sList[i].url]: shopI}));
-          
           const highRisks = shopI.filter(x=>x.risk_level==='高'||x.risk_level==='重大');
           await save(sid, sList, {total:stat.items, high:highRisks.length, critical:0}, highRisks);
-          
-          addLog(`✅ 完了: ${shopI.length}件 (高リスク: ${highRisks.length}件)`);
+          addLog(`✅ 完了: ${shopI.length}件`);
         }
       } catch(e){ sList[i].status='error'; addLog("❌ ショップエラー"); }
       
       setStat(prev => ({...prev, currentShopItems: totalShopItems, done: i+1}));
       await new Promise(r=>setTimeout(r, 500));
     }
-    setProc(false);
-    if(db && sid) await updateDoc(doc(db,'check_sessions',sid), {status:stopRef.current?'paused':'completed', updatedAt:serverTimestamp()});
-    addToast(stopRef.current?"一時停止":"全ショップ完了", "success");
+    
+    // 全停止でなければ継続
+    if(stopRef.current) {
+        addLog("一時停止しました");
+        if(db && sid) await updateDoc(doc(db,'check_sessions',sid), {status:'paused', updatedAt:serverTimestamp()});
+    } else {
+        setProc(false);
+        if(db && sid) await updateDoc(doc(db,'check_sessions',sid), {status:'completed', updatedAt:serverTimestamp()});
+        addToast("全ショップ完了", "success");
+    }
   };
 
   return (
@@ -583,7 +649,7 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
           <div className="text-right"><div className="text-2xl font-bold font-mono text-blue-400">{stat.items.toLocaleString()}</div><div className="text-[10px] text-slate-400">チェック済み商品数</div></div>
         </div>
         
-        {proc && (
+        {(proc || resume) && (
             <div className="mb-4 space-y-3">
                 <ProgressBar current={stat.done} total={stat.total} label="ショップ消化率" color="bg-green-500" />
                 <ProgressBar current={stat.currentShopItems} total={stat.currentShopTotal} label="現在のショップの進捗" color="bg-blue-500" />
@@ -592,7 +658,11 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
 
         {proc ? (
           <div className="bg-slate-800/80 backdrop-blur p-4 rounded-xl border border-slate-700 relative z-10">
-            <div className="flex justify-between items-center mb-2"><span className="font-bold flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin text-blue-400"/> 処理中: {stat.shops[stat.done]?.url || "準備中..."}</span><button onClick={()=>stopRef.current=true} className="text-xs bg-red-500/20 hover:bg-red-500/40 text-red-400 px-3 py-1 rounded border border-red-500/30 transition-colors">停止</button></div>
+            <div className="flex justify-between items-center mb-2"><span className="font-bold flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin text-blue-400"/> 処理中: {stat.shops[stat.done]?.url || "準備中..."}</span>
+                <div className="flex gap-2">
+                    <button onClick={()=>stopRef.current=true} className="text-xs bg-amber-500/20 hover:bg-amber-500/40 text-amber-400 px-3 py-1 rounded border border-amber-500/30 transition-colors">停止</button>
+                </div>
+            </div>
             <div className="h-24 overflow-y-auto font-mono text-[10px] text-green-400 bg-black/50 p-3 rounded-lg border border-white/5 custom-scrollbar">{logs.map((l,i)=><div key={i}>{l}</div>)}</div>
           </div>
         ) : (
@@ -601,7 +671,14 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
             <div className="mt-3 flex justify-between items-center">
               <p className="text-[10px] text-slate-500 flex items-center gap-1"><AlertTriangle className="w-3 h-3"/> 大量URL対応</p>
               <div className="flex gap-2">
-                  <button onClick={run} className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded-lg font-bold text-sm flex items-center gap-2 shadow-lg shadow-blue-900/50 transition-all hover:translate-y-[-1px]"><PlayCircle className="w-4 h-4"/> {resume?'再開':'開始'}</button>
+                  {!resume ? (
+                      <button onClick={run} className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded-lg font-bold text-sm flex items-center gap-2 shadow-lg shadow-blue-900/50 transition-all hover:translate-y-[-1px]"><PlayCircle className="w-4 h-4"/> 開始</button>
+                  ) : (
+                      <>
+                        <button onClick={run} className="bg-green-600 hover:bg-green-500 text-white px-6 py-2 rounded-lg font-bold text-sm flex items-center gap-2 shadow-lg shadow-green-900/50 transition-all hover:translate-y-[-1px]"><PlayCircle className="w-4 h-4"/> 再開</button>
+                        <button onClick={finish} className="bg-slate-600 hover:bg-slate-500 text-white px-6 py-2 rounded-lg font-bold text-sm flex items-center gap-2 shadow-lg shadow-slate-900/50 transition-all hover:translate-y-[-1px]"><StopCircle className="w-4 h-4"/> 終了</button>
+                      </>
+                  )}
               </div>
             </div>
           </div>
@@ -613,7 +690,7 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
             <button onClick={dlAll} className="text-xs bg-slate-100 hover:bg-slate-200 px-3 py-1 rounded text-slate-600 flex items-center gap-1"><Download className="w-3 h-3"/> 全データCSV出力</button>
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          {stat.shops.map((s,i)=><div key={i} className={`flex justify-between p-3 rounded-lg border text-xs transition-colors ${s.status==='processing'?'bg-blue-50 border-blue-200 shadow-sm':s.status==='completed'?'bg-white opacity-60 border-slate-100':'bg-slate-50 border-transparent'}`}><span className="truncate w-2/3 flex items-center gap-2">{s.status==='completed' && <CheckCircle className="w-3 h-3 text-green-500"/>} {s.url}</span><span className={`font-bold px-2 py-0.5 rounded text-[10px] uppercase ${s.status==='processing'?'text-blue-600 bg-blue-100':s.status==='completed'?'text-green-600 bg-green-100':'text-slate-400 bg-slate-200'}`}>{s.status} ({s.itemCount}件)</span></div>)}
+          {stat.shops.map((s,i)=><div key={i} className={`flex justify-between p-3 rounded-lg border text-xs transition-colors ${s.status==='processing'?'bg-blue-50 border-blue-200 shadow-sm':s.status==='completed'?'bg-white opacity-60 border-slate-100':'bg-slate-50 border-transparent'}`}><span className="truncate w-2/3 flex items-center gap-2">{s.status==='completed' && <CheckCircle className="w-3 h-3 text-green-500"/>} {s.url}</span><span className={`font-bold px-2 py-0.5 rounded text-[10px] uppercase ${s.status==='processing'?'text-blue-600 bg-blue-100':s.status==='completed'?'text-green-600 bg-green-100':'text-slate-400 bg-slate-200'}`}>{STATUS_MAP[s.status] || s.status} ({s.itemCount}件)</span></div>)}
         </div>
       </div>
     </div>
@@ -768,7 +845,7 @@ export default function App() {
               <h2 className="font-bold mb-6 flex items-center gap-2 text-lg"><History className="w-5 h-5"/> 実行履歴</h2>
               <div className="space-y-3">
                 {hist.length === 0 && <div className="text-center text-slate-400 py-10">履歴はありません</div>}
-                {hist.map(h=><div key={h.id} onClick={()=>{setIns(h);setTab('inspect');}} className="flex justify-between p-4 border border-slate-100 rounded-xl hover:bg-slate-50 cursor-pointer transition-colors group"><div className="flex gap-4 items-center"><div className={`p-3 rounded-lg ${h.type==='bulk_url'?'bg-purple-100 text-purple-600':'bg-blue-100 text-blue-600'}`}>{h.type==='bulk_url'?<Layers className="w-5 h-5"/>:<ShoppingBag className="w-5 h-5"/>}</div><div><div className="truncate font-bold text-slate-800">{h.target}</div><div className="text-xs text-slate-400 mt-0.5">{h.createdAt ? (h.createdAt.toDate ? h.createdAt.toDate().toLocaleString() : new Date(h.createdAt.seconds*1000).toLocaleString()) : '日時不明'}</div></div></div><div className="flex gap-3 items-center text-xs"><span className={`px-3 py-1 rounded-full font-bold ${h.status==='completed'?'bg-emerald-100 text-emerald-700':'bg-amber-100 text-amber-700'}`}>{h.status}</span>{(h.status==='paused'||h.status==='aborted')&&h.type==='bulk_url'&&<button onClick={(e)=>{e.stopPropagation();setRes(h);setTab('bulk');}} className="px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold">再開</button>}<ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-slate-500"/></div></div>)}
+                {hist.map(h=><div key={h.id} onClick={()=>{setIns(h);setTab('inspect');}} className="flex justify-between p-4 border border-slate-100 rounded-xl hover:bg-slate-50 cursor-pointer transition-colors group"><div className="flex gap-4 items-center"><div className={`p-3 rounded-lg ${h.type==='bulk_url'?'bg-purple-100 text-purple-600':'bg-blue-100 text-blue-600'}`}>{h.type==='bulk_url'?<Layers className="w-5 h-5"/>:<ShoppingBag className="w-5 h-5"/>}</div><div><div className="truncate font-bold text-slate-800">{h.target}</div><div className="text-xs text-slate-400 mt-0.5">{h.createdAt ? (h.createdAt.toDate ? h.createdAt.toDate().toLocaleString() : new Date(h.createdAt.seconds*1000).toLocaleString()) : '日時不明'}</div></div></div><div className="flex gap-3 items-center text-xs"><span className={`px-3 py-1 rounded-full font-bold ${h.status==='completed'?'bg-emerald-100 text-emerald-700':'bg-amber-100 text-amber-700'}`}>{STATUS_MAP[h.status] || h.status}</span>{(h.status==='paused'||h.status==='aborted')&&h.type==='bulk_url'&&<button onClick={(e)=>{e.stopPropagation();setRes(h);setTab('bulk');}} className="px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold">再開</button>}<ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-slate-500"/></div></div>)}
               </div>
             </div>
           )}
