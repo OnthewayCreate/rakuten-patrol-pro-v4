@@ -5,7 +5,7 @@ import {
   LayoutDashboard, ChevronRight, Calendar, Folder, FileSearch, ChevronDown, 
   ArrowLeft, Store, Info, PlayCircle, Terminal, Activity, Cloud, ImageIcon, 
   Bot, List, Power, Moon, Clock, RefreshCw, AlertTriangle, Bug, Timer, Filter,
-  Check, Wifi, WifiOff, PauseCircle, Download, Gavel
+  Check, Wifi, WifiOff, PauseCircle, Download, Gavel, Scale
 } from 'lucide-react';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { 
@@ -15,7 +15,7 @@ import {
 
 /**
  * ============================================================================
- * Rakuten Patrol Pro - Legal Expert Edition
+ * Rakuten Patrol Pro - Legal Expert Edition v2
  * ============================================================================
  */
 
@@ -23,7 +23,7 @@ const APP_CONFIG = {
   FIXED_PASSWORD: 'admin', 
   API_TIMEOUT: 90000, 
   RETRY_LIMIT: 5,     
-  VERSION: '18.1.0-Legal'
+  VERSION: '18.2.0-Legal'
 };
 
 const parseFirebaseConfig = (input) => {
@@ -36,7 +36,7 @@ const parseFirebaseConfig = (input) => {
   }
 };
 
-// --- API Wrapper (Load Balanced) ---
+// --- API Wrapper ---
 async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
   const keyIndex = (Math.floor(Math.random() * apiKeys.length) + retryCount) % apiKeys.length;
   const currentKey = apiKeys.length > 0 ? apiKeys[keyIndex] : '';
@@ -62,11 +62,7 @@ async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
     }
     
     const data = await res.json();
-
-    if (!res.ok) {
-        throw new Error(data.reason || `Error ${res.status}`);
-    }
-
+    if (!res.ok) throw new Error(data.reason || `Error ${res.status}`);
     return data;
 
   } catch (error) {
@@ -74,7 +70,7 @@ async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
   }
 }
 
-// キー健全性チェック
+// 健全性チェック
 async function checkApiKeyHealth(apiKey) {
     try {
         const controller = new AbortController();
@@ -112,19 +108,24 @@ const ToastContainer = ({ toasts, removeToast }) => (
   </div>
 );
 
+// リスクバッジの4段階定義
 const RiskBadge = ({ item }) => {
-  const { risk, isCritical, reason } = item;
-  // 禁止商材判定
-  const isBanned = reason && (reason.includes("食品") || reason.includes("美容") || reason.includes("化粧品") || reason.includes("医薬") || reason.includes("アダルト"));
-  // 権利侵害判定
-  const isRight = reason && (reason.includes("商標") || reason.includes("著作") || reason.includes("模造") || reason.includes("デッドコピー") || reason.includes("不正競争"));
-
-  if (isBanned) return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-purple-100 text-purple-700 border border-purple-200 gap-1 items-center whitespace-nowrap"><Bug className="w-3 h-3"/> 禁止商材</span>;
-  if (isRight || risk === '高' || isCritical) return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-red-100 text-red-700 border border-red-200 gap-1 items-center whitespace-nowrap"><Gavel className="w-3 h-3"/> 権利侵害</span>;
+  const { risk_level } = item;
   
-  if (risk === '中') return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-amber-100 text-amber-700 border border-amber-200 whitespace-nowrap">要確認</span>;
-  if (risk === 'エラー') return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-gray-100 text-gray-500 border border-gray-200 whitespace-nowrap">エラー</span>;
-  return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700 border border-emerald-200 whitespace-nowrap">OK</span>;
+  if (risk_level === '重大') {
+      return <span className="inline-flex px-3 py-1 rounded text-[10px] font-bold bg-purple-900 text-white border border-purple-700 gap-1 items-center whitespace-nowrap shadow-sm"><Bug className="w-3 h-3"/> 重大(禁止)</span>;
+  }
+  if (risk_level === '高') {
+      return <span className="inline-flex px-3 py-1 rounded text-[10px] font-bold bg-red-600 text-white border border-red-700 gap-1 items-center whitespace-nowrap shadow-sm"><Gavel className="w-3 h-3"/> 高(権利侵害)</span>;
+  }
+  if (risk_level === '中') {
+      return <span className="inline-flex px-3 py-1 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300 whitespace-nowrap"><Scale className="w-3 h-3 mr-1"/> 中(要確認)</span>;
+  }
+  if (risk_level === 'エラー') {
+      return <span className="inline-flex px-3 py-1 rounded text-[10px] font-bold bg-gray-100 text-gray-500 border border-gray-300 whitespace-nowrap">エラー</span>;
+  }
+  // デフォルト: 低
+  return <span className="inline-flex px-3 py-1 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700 border border-emerald-300 whitespace-nowrap"><CheckCircle className="w-3 h-3 mr-1"/> 低(問題なし)</span>;
 };
 
 const StatCard = ({ title, value, icon: Icon, color, subtext }) => (
@@ -160,18 +161,17 @@ const LoginView = ({ onLogin }) => {
 };
 
 const ResultTable = ({ items, title, onBack }) => {
-  // デフォルトで「すべて表示」をOFFにし、リスク商品のみ表示する
+  // デフォルトでリスク商品のみ表示 (低を除外)
   const [showAll, setShowAll] = useState(false);
   
   const displayItems = useMemo(() => {
-    // 間引きロジック: リスク「低」はデフォルトで除外
     if (showAll) return items;
-    return items.filter(i => i.risk !== '低' && i.risk !== 'Low');
+    return items.filter(i => i.risk_level !== '低' && i.risk_level !== 'Low');
   }, [items, showAll]);
 
   const dl = () => {
     const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
-    let c = "Name,Risk,Reason,URL\n" + items.map(r=>`"${(r.productName||'').replace(/"/g,'""')}",${r.risk},"${(r.reason||'').replace(/"/g,'""')}",${r.itemUrl}`).join('\n');
+    let c = "Name,Risk,Reason,URL\n" + items.map(r=>`"${(r.productName||'').replace(/"/g,'""')}",${r.risk_level},"${(r.reason||'').replace(/"/g,'""')}",${r.itemUrl}`).join('\n');
     const u = URL.createObjectURL(new Blob([bom, c], {type:"text/csv"}));
     const a = document.createElement("a"); a.href=u; a.download="report.csv"; a.click();
   };
@@ -182,7 +182,7 @@ const ResultTable = ({ items, title, onBack }) => {
         <div className="flex gap-3 items-center">{onBack&&<button onClick={onBack} className="p-2 bg-white border rounded-lg shadow-sm hover:bg-slate-50"><ArrowLeft className="w-4 h-4"/></button>}<h2 className="font-bold text-slate-800 text-lg">{title}</h2></div>
         <div className="flex gap-2">
             <button onClick={() => setShowAll(!showAll)} className={`px-4 py-2 border rounded-lg text-sm font-bold shadow-sm flex items-center gap-2 transition-all ${showAll ? 'bg-slate-800 text-white' : 'bg-white text-slate-600'}`}>
-                <Filter className="w-4 h-4"/> {showAll ? '全件表示' : 'リスク商品のみ表示'}
+                <Filter className="w-4 h-4"/> {showAll ? '全件表示中' : 'リスク商品のみ表示'}
             </button>
             <button onClick={dl} className="px-4 py-2 bg-white border rounded-lg text-sm font-bold text-slate-600 shadow-sm flex gap-2 hover:bg-slate-50 items-center"><Download className="w-4 h-4"/> CSVダウンロード</button>
         </div>
@@ -192,14 +192,14 @@ const ResultTable = ({ items, title, onBack }) => {
         {displayItems.length === 0 && !showAll && (
             <div className="flex flex-col items-center justify-center py-20 text-slate-400">
                 <CheckCircle className="w-12 h-12 mb-2 text-emerald-200"/>
-                <p>侵害リスクのある商品は検出されませんでした</p>
+                <p>現在、表示すべきリスク商品は検出されていません</p>
                 <button onClick={()=>setShowAll(true)} className="mt-4 text-xs text-blue-500 underline">すべての解析結果を見る</button>
             </div>
         )}
         <table className="w-full text-left border-collapse text-sm">
           <thead className="bg-slate-50 sticky top-0 z-10 shadow-sm">
               <tr>
-                  <th className="p-3 w-20 text-xs font-bold text-slate-500 uppercase text-center">リスク</th>
+                  <th className="p-3 w-24 text-xs font-bold text-slate-500 uppercase text-center">判定(4段階)</th>
                   <th className="p-3 w-20 text-xs font-bold text-slate-500 uppercase text-center">画像</th>
                   <th className="p-3 w-1/3 text-xs font-bold text-slate-500 uppercase">商品名 / リンク</th>
                   <th className="p-3 text-xs font-bold text-slate-500 uppercase">弁理士AIによる法的見解</th>
@@ -207,7 +207,7 @@ const ResultTable = ({ items, title, onBack }) => {
           </thead>
           <tbody className="divide-y divide-slate-100">
               {displayItems.map((i,x)=>(
-                  <tr key={x} className="hover:bg-slate-50/80 transition-colors">
+                  <tr key={x} className={`transition-colors ${i.risk_level==='重大'?'bg-purple-50/50 hover:bg-purple-50':i.risk_level==='高'?'bg-red-50/50 hover:bg-red-50':'hover:bg-slate-50/80'}`}>
                       <td className="p-3 align-middle text-center"><RiskBadge item={i}/></td>
                       <td className="p-3 align-middle text-center">
                           {i.imageUrl ? (
@@ -221,7 +221,12 @@ const ResultTable = ({ items, title, onBack }) => {
                           {i.itemUrl!=='#'&&<a href={i.itemUrl} target="_blank" className="text-blue-500 text-[10px] hover:underline inline-flex items-center gap-1"><ExternalLink className="w-3 h-3"/> 商品ページへ</a>}
                       </td>
                       <td className="p-3 align-middle">
-                          <div className={`text-xs leading-relaxed p-2 rounded ${i.risk==='高'||i.isCritical ? 'bg-red-50 text-red-800 border border-red-100 font-bold' : 'text-slate-600'}`}>
+                          <div className={`text-xs leading-relaxed p-3 rounded-lg border ${
+                              i.risk_level==='重大' ? 'bg-purple-100 text-purple-900 border-purple-200 font-medium' :
+                              i.risk_level==='高' ? 'bg-red-50 text-red-900 border-red-100 font-medium' :
+                              i.risk_level==='中' ? 'bg-amber-50 text-amber-900 border-amber-100' :
+                              'bg-slate-50 text-slate-600 border-slate-100'
+                          }`}>
                               {i.reason}
                           </div>
                       </td>
@@ -264,7 +269,7 @@ const SinglePatrolView = ({ config, db, addToast }) => {
         
         const count = d.count || 0;
         const concurrency = Math.max(1, config.apiKeys.length * 3);
-        const estTime = Math.ceil(count / concurrency * 1.5); // 画像解析分少し余裕を見る
+        const estTime = Math.ceil(count / concurrency * 1.5); 
 
         setMeta({ count, estimatedTime: estTime });
         setStatus('ready');
@@ -289,8 +294,8 @@ const SinglePatrolView = ({ config, db, addToast }) => {
     let processedCount = progress.processed;
     let all = [...res];
     
-    // 画像解析があるので並列数は控えめにしつつ、キー数でカバー
-    const BATCH = Math.min(config.apiKeys.length * 2, 10); 
+    // 画像解析込みのため並列数調整 (5キーなら10並列程度)
+    const BATCH = Math.min(config.apiKeys.length * 2, 12); 
 
     try {
       while(true) {
@@ -335,7 +340,7 @@ const SinglePatrolView = ({ config, db, addToast }) => {
           
           const batchItems = d.products.slice(i, i+BATCH);
           const results = await Promise.all(batchItems.map(b => analyzeItemRisk({productName:b.name, imageUrl:b.imageUrl}, config.apiKeys)));
-          const batchResults = batchItems.map((b,x) => ({...b, ...results[x], risk: results[x].risk_level, isCritical: results[x].is_critical}));
+          const batchResults = batchItems.map((b,x) => ({...b, ...results[x]}));
           
           all = [...all, ...batchResults];
           setRes(prev => [...prev, ...batchResults]);
@@ -382,8 +387,8 @@ const SinglePatrolView = ({ config, db, addToast }) => {
             status:'completed', 
             summary:{
                 total:data.length, 
-                high:data.filter(i=>i.risk==='高'||i.risk==='High').length, 
-                critical:data.filter(i=>i.isCritical).length
+                high:data.filter(i=>i.risk_level==='高'||i.risk_level==='重大').length, 
+                critical:data.filter(i=>i.is_critical).length
             }, 
             details:data 
         });
@@ -438,7 +443,7 @@ const SinglePatrolView = ({ config, db, addToast }) => {
                         <div><span className="text-slate-500 block text-xs">残り時間</span><span className="font-bold text-lg text-blue-600">{formatTime(progress.remainingTime)}</span></div>
                     )}
                 </div>
-                {status === 'paused' && <span className="text-amber-600 font-bold flex items-center gap-1"><PauseCircle className="w-4 h-4"/> 一時停止中</span>}
+                {status === 'paused' && <span className="text-amber-600 font-bold flex items-center gap-1"><PauseCircle className="w-4 h-4"/> 一時停止中 (CSV出力可能)</span>}
             </div>
         )}
         {msg && <p className="mt-2 text-sm text-blue-600 font-bold animate-pulse flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin"/> {msg}</p>}
@@ -541,7 +546,7 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
                 }
             }));
 
-            const res = b.map((x,k)=>({...x, ...results[k], risk:results[k].risk_level, isCritical:results[k].is_critical}));
+            const res = b.map((x,k)=>({...x, ...results[k]}));
             shopI=[...shopI,...res];
             
             await new Promise(r=>setTimeout(r, 800));
@@ -562,7 +567,7 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
         
         if(!stopRef.current) {
           sList[i].status='completed'; sList[i].itemCount=shopI.length; totalI+=shopI.length;
-          await save(sid, sList, {total:totalI, high:0, critical:0}, shopI.filter(x=>x.isCritical||x.risk==='高'||x.risk==='High'));
+          await save(sid, sList, {total:totalI, high:0, critical:0}, shopI.filter(x=>x.risk_level==='高'||x.risk_level==='重大'));
           addLog(`✅ 完了: ${shopI.length}件`);
         }
       } catch(e){ 
