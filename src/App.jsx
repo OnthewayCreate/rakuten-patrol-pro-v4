@@ -4,7 +4,8 @@ import {
   Lock, LogOut, History, Settings, Search, ExternalLink, Siren, User, X, 
   LayoutDashboard, ChevronRight, Calendar, Folder, FileSearch, ChevronDown, 
   ArrowLeft, Store, Info, PlayCircle, Terminal, Activity, Cloud, ImageIcon, 
-  Bot, List, Power, Moon, Clock, RefreshCw, AlertTriangle, Bug, Timer, Filter
+  Bot, List, Power, Moon, Clock, RefreshCw, AlertTriangle, Bug, Timer, Filter,
+  Check, Wifi, WifiOff
 } from 'lucide-react';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { 
@@ -14,7 +15,7 @@ import {
 
 /**
  * ============================================================================
- * Rakuten Patrol Pro - Production Version (Visual Enhanced)
+ * Rakuten Patrol Pro - High Performance & Robust Version
  * ============================================================================
  */
 
@@ -22,7 +23,7 @@ const APP_CONFIG = {
   FIXED_PASSWORD: 'admin', 
   API_TIMEOUT: 90000, 
   RETRY_LIMIT: 5,     
-  VERSION: '16.2.0-Visual'
+  VERSION: '16.3.0-Turbo'
 };
 
 // NGカテゴリ・キーワード定義
@@ -49,10 +50,14 @@ const checkRestrictedCategory = (productName) => {
   return foundKey ? `【NG商材】"${foundKey}" 関連` : null;
 };
 
-// --- API Wrapper (Robust) ---
+// --- API Wrapper (Load Balanced) ---
 async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
   const restrictedReason = checkRestrictedCategory(itemData.productName);
-  const currentKey = apiKeys.length > 0 ? apiKeys[retryCount % apiKeys.length] : '';
+  
+  // ロードバランシング: 初回からランダムにキーを選択し、リトライ時はシフトする
+  // これにより、5つのキーがある場合、最初から負荷が1/5に分散される
+  const keyIndex = (Math.floor(Math.random() * apiKeys.length) + retryCount) % apiKeys.length;
+  const currentKey = apiKeys.length > 0 ? apiKeys[keyIndex] : '';
 
   try {
     const controller = new AbortController();
@@ -68,11 +73,13 @@ async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
 
     if (res.status === 429 || res.status >= 500) {
       if (retryCount < APP_CONFIG.RETRY_LIMIT) {
-        const waitTime = Math.pow(2, retryCount) * 2000 + (Math.random() * 1000);
+        // エクスポネンシャルバックオフ + ランダムジッター
+        const waitTime = Math.pow(2, retryCount) * 1000 + (Math.random() * 1000);
         await new Promise(resolve => setTimeout(resolve, waitTime));
+        // 再帰呼び出し（次は別のキーが選ばれる可能性が高い）
         return analyzeItemRisk(itemData, apiKeys, retryCount + 1);
       } else { 
-        throw new Error("API混雑 (リトライ上限)"); 
+        throw new Error("API混雑 (全キー混雑)"); 
       }
     }
     
@@ -87,6 +94,24 @@ async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
     if (restrictedReason) return { risk_level: '高', is_critical: true, reason: `${restrictedReason} (Error)` };
     return { risk_level: "エラー", reason: error.message };
   }
+}
+
+// キーの健全性チェック関数
+async function checkApiKeyHealth(apiKey) {
+    try {
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(), 10000); // 10秒タイムアウト
+        const res = await fetch('/api/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ apiKey, isTest: true }), // テストモード
+            signal: controller.signal
+        });
+        if (res.ok) return { ok: true, status: 200 };
+        return { ok: false, status: res.status };
+    } catch (e) {
+        return { ok: false, status: 'Error' };
+    }
 }
 
 const formatTime = (seconds) => {
@@ -150,11 +175,8 @@ const LoginView = ({ onLogin }) => {
   );
 };
 
-// --- Updated Result Table ---
 const ResultTable = ({ items, title, onBack }) => {
   const [showAll, setShowAll] = useState(false);
-  
-  // フィルター: 「低」リスク以外を表示 (高、中、エラー、不明)
   const displayItems = useMemo(() => {
     if (showAll) return items;
     return items.filter(i => i.risk !== '低' && i.risk !== 'Low');
@@ -254,7 +276,11 @@ const SinglePatrolView = ({ config, db, addToast }) => {
         const d = await r.json();
         
         const count = d.count || 0;
-        const estTime = Math.ceil((count / 5) * 3); 
+        
+        // 推定時間の最適化：並列数に応じて計算
+        // キーが5個あれば、バッチ15件を約2秒で処理と仮定 -> 7.5件/秒
+        const concurrency = Math.max(1, config.apiKeys.length * 2);
+        const estTime = Math.ceil(count / concurrency * 1.2); 
 
         setMeta({ count, estimatedTime: estTime });
         setStatus('ready');
@@ -279,7 +305,10 @@ const SinglePatrolView = ({ config, db, addToast }) => {
     let p = 1;
     let processedCount = 0;
     let all = [];
-    const BATCH = 5; 
+    
+    // パフォーマンス向上: APIキーの数に応じて並列数を増やす
+    // キー1つにつき並列数3まで安全と仮定し、最大15並列（5キーの場合）
+    const BATCH = Math.min(config.apiKeys.length * 3, 20); 
 
     try {
       while(true) {
@@ -303,11 +332,13 @@ const SinglePatrolView = ({ config, db, addToast }) => {
 
         if(!d.products?.length) break;
 
-        setMsg(`ページ ${p}: ${d.products.length}件 分析中...`);
+        setMsg(`ページ ${p}: ${d.products.length}件 高速分析中 (並列数:${BATCH})...`);
         
         for(let i=0; i<d.products.length; i+=BATCH) {
           if(stopRef.current) break;
           const batchItems = d.products.slice(i, i+BATCH);
+          
+          // 並列リクエスト実行
           const results = await Promise.all(batchItems.map(b => analyzeItemRisk({productName:b.name, imageUrl:b.imageUrl}, config.apiKeys)));
           const batchResults = batchItems.map((b,x) => ({...b, ...results[x], risk: results[x].risk_level, isCritical: results[x].is_critical}));
           
@@ -321,7 +352,9 @@ const SinglePatrolView = ({ config, db, addToast }) => {
           const remTime = speed > 0 ? remainingItems / speed : 0;
           
           setProgress({ processed: processedCount, remainingTime: remTime, startTime });
-          await new Promise(r=>setTimeout(r, 1500));
+          
+          // 待機時間を短縮（負荷分散されているため）
+          await new Promise(r=>setTimeout(r, 800));
         }
         
         if (processedCount >= meta.count) break;
@@ -347,7 +380,7 @@ const SinglePatrolView = ({ config, db, addToast }) => {
   return (
     <div className="h-full flex flex-col animate-in fade-in duration-500">
       <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm mb-4 flex-shrink-0">
-        <h2 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><ShoppingBag className="w-5 h-5 text-blue-600"/> 通常パトロール (安定モード)</h2>
+        <h2 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><ShoppingBag className="w-5 h-5 text-blue-600"/> 通常パトロール (高速モード)</h2>
         <div className="flex gap-2 mb-4">
           <input value={url} onChange={e=>setUrl(e.target.value)} disabled={status==='running'||status==='checking'} className="flex-1 p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="ショップURL (例: https://www.rakuten.co.jp/shop-sample)" />
           {status === 'idle' || status === 'completed' || status === 'ready' ? (
@@ -382,7 +415,7 @@ const SinglePatrolView = ({ config, db, addToast }) => {
             <div className="flex-1 flex flex-col items-center justify-center text-slate-400">
                 <Search className="w-12 h-12 mb-2 opacity-20"/>
                 <p>URLを入力して「調査」ボタンを押してください</p>
-                <p className="text-[10px] mt-2 opacity-60">※商品数と所要時間を確認してから開始できます</p>
+                <p className="text-[10px] mt-2 opacity-60">※有効なAPIキーが多いほど高速に処理されます</p>
             </div> 
             : <ResultTable items={res} title={`スキャン結果 (${res.length}/${meta.count})`} />}
       </div>
@@ -436,7 +469,8 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
     setStat(p=>({...p, total:sList.length, sid}));
     addLog("🚀 一括パトロール開始");
 
-    const BATCH = Math.min(config.apiKeys.length * 2, 4);
+    // 高速化: 5キーあれば15並列まで許容
+    const BATCH = Math.min(config.apiKeys.length * 3, 15);
 
     for(let i=0; i<sList.length; i++) {
       if(stopRef.current) break;
@@ -444,7 +478,7 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
       
       sList[i].status='processing';
       setStat(p=>({...p, cur:sList[i].url, done:i, shops:[...sList]}));
-      addLog(`[${i+1}/${sList.length}] ${sList[i].url} 開始`);
+      addLog(`[${i+1}/${sList.length}] ${sList[i].url} 開始 (並列:${BATCH})`);
       
       let p=1, shopI=[], hasN=true;
       try {
@@ -472,6 +506,8 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
           for(let j=0; j<d.products.length; j+=BATCH) {
             if(stopRef.current) break;
             const b = d.products.slice(j, j+BATCH);
+            
+            // 複数のキーを使って並列処理
             const results = await Promise.all(b.map(async x => {
                 try {
                     return await analyzeItemRisk({productName:x.name, imageUrl:x.imageUrl}, config.apiKeys);
@@ -482,7 +518,9 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
 
             const res = b.map((x,k)=>({...x, ...results[k], risk:results[k].risk_level, isCritical:results[k].is_critical}));
             shopI=[...shopI,...res];
-            await new Promise(r=>setTimeout(r, 1000));
+            
+            // 待機時間を短縮
+            await new Promise(r=>setTimeout(r, 800));
           }
           
           if(p%5===0) { 
@@ -508,7 +546,7 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
           addLog("❌ ショップエラー - スキップします"); 
           console.error(e);
       }
-      await new Promise(r=>setTimeout(r, 2000));
+      await new Promise(r=>setTimeout(r, 1500));
     }
     setProc(false);
     if(db && sid) await updateDoc(doc(db,'check_sessions',sid), {status:stopRef.current?'paused':'completed', updatedAt:serverTimestamp()});
@@ -520,7 +558,7 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
       <div className="bg-slate-900 text-white p-6 rounded-2xl shadow-lg flex-shrink-0 relative overflow-hidden">
         <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500 rounded-full blur-3xl opacity-10 pointer-events-none translate-x-1/2 -translate-y-1/2"></div>
         <div className="flex justify-between mb-4 relative z-10">
-          <div><h2 className="text-xl font-bold flex items-center gap-2"><Moon className="w-5 h-5 text-yellow-400"/> 一括夜間パトロール (堅牢モード)</h2></div>
+          <div><h2 className="text-xl font-bold flex items-center gap-2"><Moon className="w-5 h-5 text-yellow-400"/> 一括夜間パトロール (高速モード)</h2></div>
           <div className="text-right"><div className="text-2xl font-bold font-mono text-blue-400">{stat.items.toLocaleString()}</div><div className="text-[10px] text-slate-400">チェック済み商品数</div></div>
         </div>
         {proc ? (
@@ -552,6 +590,9 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
 
 const SettingsView = ({ config, setConfig, addToast }) => {
   const [k, setK] = useState(config.apiKeys.join('\n'));
+  const [checking, setChecking] = useState(false);
+  const [keyStatus, setKeyStatus] = useState({});
+
   const save = () => {
     const keys = k.split('\n').map(x=>x.trim()).filter(x=>x);
     setConfig({...config, apiKeys:keys, rakutenAppId:config.rakutenAppId, firebaseJson:config.firebaseJson});
@@ -560,11 +601,48 @@ const SettingsView = ({ config, setConfig, addToast }) => {
     localStorage.setItem('firebase_config', config.firebaseJson);
     addToast("設定を保存しました", "success");
   };
+
+  const checkKeys = async () => {
+    const keys = k.split('\n').map(x=>x.trim()).filter(x=>x);
+    if (keys.length === 0) return addToast("APIキーが入力されていません", "error");
+    
+    setChecking(true);
+    setKeyStatus({});
+    
+    for (let i = 0; i < keys.length; i++) {
+        const key = keys[i];
+        const res = await checkApiKeyHealth(key);
+        setKeyStatus(prev => ({...prev, [i]: res}));
+        await new Promise(r => setTimeout(r, 500)); // 間隔を空ける
+    }
+    setChecking(false);
+    addToast("チェック完了", "success");
+  };
+
   return (
     <div className="max-w-2xl mx-auto bg-white p-8 rounded-xl border border-slate-200 shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-500">
       <h2 className="text-lg font-bold mb-6 flex items-center gap-2 pb-4 border-b"><Settings className="w-5 h-5"/> システム設定</h2>
       <div className="space-y-6">
-        <div><label className="text-xs font-bold text-slate-500 mb-1 block">Gemini API Keys (1行に1つ)</label><textarea value={k} onChange={e=>setK(e.target.value)} className="w-full p-3 border border-slate-200 rounded-lg h-24 text-xs font-mono focus:ring-2 focus:ring-slate-200 outline-none" placeholder="Gemini APIキーを入力してください"/></div>
+        <div>
+            <div className="flex justify-between items-end mb-1">
+                <label className="text-xs font-bold text-slate-500">Gemini API Keys (1行に1つ)</label>
+                <button onClick={checkKeys} disabled={checking} className="text-xs bg-slate-100 hover:bg-slate-200 px-3 py-1 rounded text-slate-600 flex items-center gap-1 transition-colors">
+                    {checking ? <Loader2 className="w-3 h-3 animate-spin"/> : <RefreshCw className="w-3 h-3"/>} 健全性チェック
+                </button>
+            </div>
+            <div className="relative">
+                <textarea value={k} onChange={e=>setK(e.target.value)} className="w-full p-3 border border-slate-200 rounded-lg h-32 text-xs font-mono focus:ring-2 focus:ring-slate-200 outline-none leading-loose" placeholder="Gemini APIキーを入力してください"/>
+                <div className="absolute top-3 right-3 flex flex-col gap-2">
+                    {k.split('\n').map((_, i) => keyStatus[i] && (
+                        <div key={i} className={`text-[10px] px-2 py-0.5 rounded font-bold flex items-center gap-1 ${keyStatus[i].ok ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                            {keyStatus[i].ok ? <Wifi className="w-3 h-3"/> : <WifiOff className="w-3 h-3"/>}
+                            {keyStatus[i].ok ? 'OK' : `ERR(${keyStatus[i].status})`}
+                        </div>
+                    ))}
+                </div>
+            </div>
+            <p className="text-[10px] text-slate-400 mt-1">※複数のキーを登録すると、自動的に負荷分散を行い高速化・安定化します。</p>
+        </div>
         <div><label className="text-xs font-bold text-slate-500 mb-1 block">Rakuten App ID</label><input value={config.rakutenAppId} onChange={e=>setConfig({...config, rakutenAppId:e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-slate-200 outline-none"/></div>
         <div><label className="text-xs font-bold text-slate-500 mb-1 block">Firebase Config JSON</label><textarea value={config.firebaseJson} onChange={e=>setConfig({...config, firebaseJson:e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg h-24 text-xs font-mono focus:ring-2 focus:ring-slate-200 outline-none" placeholder='{"apiKey": "...", ...}'/></div>
         <button onClick={save} className="w-full py-3 bg-slate-800 text-white font-bold rounded-lg hover:bg-slate-700 transition-colors shadow-lg">設定を保存</button>
@@ -585,13 +663,11 @@ export default function App() {
   const [ins, setIns] = useState(null);
   const [res, setRes] = useState(null);
   
-  // Ref for stopping bulk process
   const stopRef = useRef(false);
 
   const toast = (m,t='info') => { const id=Date.now(); setToasts(p=>[...p,{id,message:m,type:t}]); setTimeout(()=>setToasts(p=>p.filter(x=>x.id!==id)),4000); };
   
   useEffect(() => {
-    // Load config from localStorage
     const k = JSON.parse(localStorage.getItem('gemini_api_keys')||'[]');
     const r = localStorage.getItem('rakuten_app_id')||'';
     const f = localStorage.getItem('firebase_config')||'';
@@ -608,7 +684,6 @@ export default function App() {
             setDb(firestore); 
             setDbSt('OK'); 
             
-            // Listen to history
             const q = query(collection(firestore,'check_sessions'), orderBy('createdAt','desc'), limit(20));
             onSnapshot(q, s => {
                 setHist(s.docs.map(d=>({id:d.id,...d.data()})));
@@ -626,7 +701,7 @@ export default function App() {
     <div className="h-screen bg-slate-50 font-sans text-slate-800 flex flex-col overflow-hidden">
       <ToastContainer toasts={toasts} removeToast={id=>setToasts(p=>p.filter(t=>t.id!==id))} />
       <header className="bg-white border-b h-16 flex items-center justify-between px-6 sticky top-0 z-20 shadow-sm flex-shrink-0">
-        <div className="flex items-center gap-2 font-bold text-lg text-slate-800"><div className="bg-slate-800 p-1.5 rounded-lg"><Bot className="w-5 h-5 text-white"/></div> Rakuten Patrol Pro</div>
+        <div className="flex items-center gap-2 font-bold text-lg text-slate-800"><div className="bg-slate-800 p-1.5 rounded-lg"><Bot className="w-5 h-5 text-white"/></div> Rakuten Patrol Pro <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full ml-2">v{APP_CONFIG.VERSION}</span></div>
         <div className="flex items-center gap-4 text-xs font-bold text-slate-500">
             <span className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full ${dbSt==='OK'?'bg-emerald-100 text-emerald-700':dbSt==='No Config'?'bg-slate-200 text-slate-600':'bg-amber-100 text-amber-700'}`}>
                 <div className={`w-2 h-2 rounded-full ${dbSt==='OK'?'bg-emerald-500':dbSt==='No Config'?'bg-slate-400':'bg-amber-500'}`}></div>
