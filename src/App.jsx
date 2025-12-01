@@ -5,7 +5,7 @@ import {
   LayoutDashboard, ChevronRight, Calendar, Folder, FileSearch, ChevronDown, 
   ArrowLeft, Store, Info, PlayCircle, Terminal, Activity, Cloud, ImageIcon, 
   Bot, List, Power, Moon, Clock, RefreshCw, AlertTriangle, Bug, Timer, Filter,
-  Check, Wifi, WifiOff
+  Check, Wifi, WifiOff, PauseCircle, Download, Gavel
 } from 'lucide-react';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { 
@@ -15,7 +15,7 @@ import {
 
 /**
  * ============================================================================
- * Rakuten Patrol Pro - Stable Server-Side Version (Gemini 2.5)
+ * Rakuten Patrol Pro - Legal Expert Edition
  * ============================================================================
  */
 
@@ -23,16 +23,8 @@ const APP_CONFIG = {
   FIXED_PASSWORD: 'admin', 
   API_TIMEOUT: 90000, 
   RETRY_LIMIT: 5,     
-  VERSION: '17.1.0-Stable'
+  VERSION: '18.1.0-Legal'
 };
-
-// NGカテゴリ・キーワード定義
-const RESTRICTED_KEYWORDS = [
-  '食品', '飲料', 'お菓子', 'スイーツ', '肉', '魚', '米', 'サプリ', '酵素', 'ダイエット',
-  '化粧品', 'コスメ', '美容液', 'ローション', 'クリーム', 'スキンケア', 'メイク',
-  '医薬品', '薬', 'コンタクト', 'レンズ', '治療', 'メディカル',
-  'アカウント', 'コード', '電子マネー', 'チケット'
-];
 
 const parseFirebaseConfig = (input) => {
   if (!input) return null;
@@ -44,17 +36,8 @@ const parseFirebaseConfig = (input) => {
   }
 };
 
-const checkRestrictedCategory = (productName) => {
-  if (!productName) return null;
-  const foundKey = RESTRICTED_KEYWORDS.find(key => productName.includes(key));
-  return foundKey ? `【NG商材】"${foundKey}" 関連` : null;
-};
-
-// --- API Wrapper (Server Side Proxy) ---
+// --- API Wrapper (Load Balanced) ---
 async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
-  const restrictedReason = checkRestrictedCategory(itemData.productName);
-  
-  // 負荷分散：ランダムにキーを選択
   const keyIndex = (Math.floor(Math.random() * apiKeys.length) + retryCount) % apiKeys.length;
   const currentKey = apiKeys.length > 0 ? apiKeys[keyIndex] : '';
 
@@ -62,7 +45,6 @@ async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), APP_CONFIG.API_TIMEOUT);
 
-    // Vercel Serverless Function経由で実行
     const res = await fetch('/api/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -71,7 +53,6 @@ async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
     });
     clearTimeout(timeoutId);
 
-    // ステータスコードチェック
     if (res.status === 429 || res.status >= 500) {
       if (retryCount < APP_CONFIG.RETRY_LIMIT) {
         const waitTime = Math.pow(2, retryCount) * 1000 + (Math.random() * 1000);
@@ -83,43 +64,30 @@ async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
     const data = await res.json();
 
     if (!res.ok) {
-        // サーバーから返された具体的なエラー理由を投げる
         throw new Error(data.reason || `Error ${res.status}`);
     }
 
-    const aiResult = data;
-
-    if (restrictedReason) {
-      return { ...aiResult, risk_level: '高', is_critical: true, reason: `${restrictedReason} (AI: ${aiResult.reason})` };
-    }
-    return aiResult;
+    return data;
 
   } catch (error) {
-    if (restrictedReason) return { risk_level: '高', is_critical: true, reason: `${restrictedReason} (Error)` };
     return { risk_level: "エラー", reason: error.message };
   }
 }
 
-// キーの健全性チェック関数
+// キー健全性チェック
 async function checkApiKeyHealth(apiKey) {
     try {
         const controller = new AbortController();
         setTimeout(() => controller.abort(), 10000); 
-        
         const res = await fetch('/api/analyze', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ apiKey, isTest: true }),
             signal: controller.signal
         });
-        
         const data = await res.json().catch(()=>({}));
-        
         if (res.ok) return { ok: true, status: 200, msg: 'OK' };
-        
-        // エラーメッセージの取得
-        const msg = data.reason || data.error || res.statusText;
-        return { ok: false, status: res.status, msg: msg };
+        return { ok: false, status: res.status, msg: data.reason || res.statusText };
     } catch (e) {
         return { ok: false, status: 'ERR', msg: e.message };
     }
@@ -145,13 +113,18 @@ const ToastContainer = ({ toasts, removeToast }) => (
 );
 
 const RiskBadge = ({ item }) => {
-  const { risk, isCritical, is_critical, reason } = item;
-  if (reason && reason.includes("【NG商材】")) return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-slate-800 text-white border border-slate-600 gap-1 items-center whitespace-nowrap"><Bug className="w-3 h-3"/> 禁止商材</span>;
-  if (isCritical || is_critical) return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-purple-100 text-purple-700 border border-purple-200 gap-1 items-center whitespace-nowrap"><Siren className="w-3 h-3"/> 重大</span>;
-  if (risk === '高' || risk === 'High') return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-red-100 text-red-700 border border-red-200 whitespace-nowrap">高</span>;
-  if (risk === '中' || risk === 'Medium') return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-amber-100 text-amber-700 border border-amber-200 whitespace-nowrap">中</span>;
+  const { risk, isCritical, reason } = item;
+  // 禁止商材判定
+  const isBanned = reason && (reason.includes("食品") || reason.includes("美容") || reason.includes("化粧品") || reason.includes("医薬") || reason.includes("アダルト"));
+  // 権利侵害判定
+  const isRight = reason && (reason.includes("商標") || reason.includes("著作") || reason.includes("模造") || reason.includes("デッドコピー") || reason.includes("不正競争"));
+
+  if (isBanned) return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-purple-100 text-purple-700 border border-purple-200 gap-1 items-center whitespace-nowrap"><Bug className="w-3 h-3"/> 禁止商材</span>;
+  if (isRight || risk === '高' || isCritical) return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-red-100 text-red-700 border border-red-200 gap-1 items-center whitespace-nowrap"><Gavel className="w-3 h-3"/> 権利侵害</span>;
+  
+  if (risk === '中') return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-amber-100 text-amber-700 border border-amber-200 whitespace-nowrap">要確認</span>;
   if (risk === 'エラー') return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-gray-100 text-gray-500 border border-gray-200 whitespace-nowrap">エラー</span>;
-  return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700 border border-emerald-200 whitespace-nowrap">低</span>;
+  return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700 border border-emerald-200 whitespace-nowrap">OK</span>;
 };
 
 const StatCard = ({ title, value, icon: Icon, color, subtext }) => (
@@ -173,7 +146,7 @@ const LoginView = ({ onLogin }) => {
   return (
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
       <div className="bg-white p-8 rounded-2xl shadow-xl max-w-sm w-full border border-slate-100 text-center animate-in zoom-in-95 duration-300">
-        <div className="mb-8"><div className="inline-flex p-4 bg-slate-800 rounded-xl mb-4 shadow-lg"><Bot className="w-8 h-8 text-white"/></div><h1 className="text-xl font-bold text-slate-800">Rakuten Patrol <span className="text-blue-600">Pro</span></h1></div>
+        <div className="mb-8"><div className="inline-flex p-4 bg-slate-800 rounded-xl mb-4 shadow-lg"><Gavel className="w-8 h-8 text-white"/></div><h1 className="text-xl font-bold text-slate-800">Rakuten Patrol <span className="text-blue-600">Pro</span></h1></div>
         <form onSubmit={(e)=>{e.preventDefault(); setL(true); setTimeout(() => onLogin(p).finally(()=>setL(false)), 800);}} className="space-y-4">
           <div className="text-left">
             <label className="text-[10px] font-bold text-slate-400 ml-1">ACCESS KEY</label>
@@ -187,8 +160,11 @@ const LoginView = ({ onLogin }) => {
 };
 
 const ResultTable = ({ items, title, onBack }) => {
+  // デフォルトで「すべて表示」をOFFにし、リスク商品のみ表示する
   const [showAll, setShowAll] = useState(false);
+  
   const displayItems = useMemo(() => {
+    // 間引きロジック: リスク「低」はデフォルトで除外
     if (showAll) return items;
     return items.filter(i => i.risk !== '低' && i.risk !== 'Low');
   }, [items, showAll]);
@@ -206,9 +182,9 @@ const ResultTable = ({ items, title, onBack }) => {
         <div className="flex gap-3 items-center">{onBack&&<button onClick={onBack} className="p-2 bg-white border rounded-lg shadow-sm hover:bg-slate-50"><ArrowLeft className="w-4 h-4"/></button>}<h2 className="font-bold text-slate-800 text-lg">{title}</h2></div>
         <div className="flex gap-2">
             <button onClick={() => setShowAll(!showAll)} className={`px-4 py-2 border rounded-lg text-sm font-bold shadow-sm flex items-center gap-2 transition-all ${showAll ? 'bg-slate-800 text-white' : 'bg-white text-slate-600'}`}>
-                <Filter className="w-4 h-4"/> {showAll ? '全件表示中' : 'リスク検知のみ表示'}
+                <Filter className="w-4 h-4"/> {showAll ? '全件表示' : 'リスク商品のみ表示'}
             </button>
-            <button onClick={dl} className="px-4 py-2 bg-white border rounded-lg text-sm font-bold text-slate-600 shadow-sm flex gap-2 hover:bg-slate-50 items-center"><ArrowLeft className="w-4 h-4 rotate-[-90deg]"/> CSV</button>
+            <button onClick={dl} className="px-4 py-2 bg-white border rounded-lg text-sm font-bold text-slate-600 shadow-sm flex gap-2 hover:bg-slate-50 items-center"><Download className="w-4 h-4"/> CSVダウンロード</button>
         </div>
       </div>
       
@@ -216,17 +192,17 @@ const ResultTable = ({ items, title, onBack }) => {
         {displayItems.length === 0 && !showAll && (
             <div className="flex flex-col items-center justify-center py-20 text-slate-400">
                 <CheckCircle className="w-12 h-12 mb-2 text-emerald-200"/>
-                <p>リスク商品は見つかりませんでした</p>
-                <button onClick={()=>setShowAll(true)} className="mt-4 text-xs text-blue-500 underline">すべての商品を見る</button>
+                <p>侵害リスクのある商品は検出されませんでした</p>
+                <button onClick={()=>setShowAll(true)} className="mt-4 text-xs text-blue-500 underline">すべての解析結果を見る</button>
             </div>
         )}
         <table className="w-full text-left border-collapse text-sm">
           <thead className="bg-slate-50 sticky top-0 z-10 shadow-sm">
               <tr>
-                  <th className="p-3 w-16 text-xs font-bold text-slate-500 uppercase text-center">リスク</th>
+                  <th className="p-3 w-20 text-xs font-bold text-slate-500 uppercase text-center">リスク</th>
                   <th className="p-3 w-20 text-xs font-bold text-slate-500 uppercase text-center">画像</th>
                   <th className="p-3 w-1/3 text-xs font-bold text-slate-500 uppercase">商品名 / リンク</th>
-                  <th className="p-3 text-xs font-bold text-slate-500 uppercase">AI分析コメント</th>
+                  <th className="p-3 text-xs font-bold text-slate-500 uppercase">弁理士AIによる法的見解</th>
               </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -245,7 +221,7 @@ const ResultTable = ({ items, title, onBack }) => {
                           {i.itemUrl!=='#'&&<a href={i.itemUrl} target="_blank" className="text-blue-500 text-[10px] hover:underline inline-flex items-center gap-1"><ExternalLink className="w-3 h-3"/> 商品ページへ</a>}
                       </td>
                       <td className="p-3 align-middle">
-                          <div className={`text-xs leading-relaxed p-2 rounded ${i.risk==='高'||i.isCritical ? 'bg-red-50 text-red-800 border border-red-100' : 'text-slate-600'}`}>
+                          <div className={`text-xs leading-relaxed p-2 rounded ${i.risk==='高'||i.isCritical ? 'bg-red-50 text-red-800 border border-red-100 font-bold' : 'text-slate-600'}`}>
                               {i.reason}
                           </div>
                       </td>
@@ -262,13 +238,13 @@ const SinglePatrolView = ({ config, db, addToast }) => {
   const [url, setUrl] = useState('');
   const [status, setStatus] = useState('idle');
   const [meta, setMeta] = useState({ count: 0, estimatedTime: 0 });
-  const [progress, setProgress] = useState({ processed: 0, remainingTime: 0, startTime: 0 });
+  const [progress, setProgress] = useState({ processed: 0, remainingTime: 0, startTime: 0, currentPage: 1 });
   const [res, setRes] = useState([]);
   const [msg, setMsg] = useState('');
   const stopRef = useRef(false);
 
   const checkShop = async () => {
-    if(!url || !config.apiKeys.length || !config.rakutenAppId) return addToast("URL, Rakuten AppID, Gemini API Keyが必要です", "error");
+    if(!url || !config.apiKeys.length || !config.rakutenAppId) return addToast("設定が不足しています", "error");
     
     setStatus('checking');
     setMsg("ショップ情報を取得中...");
@@ -288,10 +264,12 @@ const SinglePatrolView = ({ config, db, addToast }) => {
         
         const count = d.count || 0;
         const concurrency = Math.max(1, config.apiKeys.length * 3);
-        const estTime = Math.ceil(count / concurrency * 1.0);
+        const estTime = Math.ceil(count / concurrency * 1.5); // 画像解析分少し余裕を見る
 
         setMeta({ count, estimatedTime: estTime });
         setStatus('ready');
+        setRes([]);
+        setProgress({ processed: 0, remainingTime: estTime, startTime: 0, currentPage: 1 });
         addToast(`商品数: ${count}件を取得しました`, "success");
     } catch(e) {
         console.error(e);
@@ -303,22 +281,28 @@ const SinglePatrolView = ({ config, db, addToast }) => {
 
   const start = async () => {
     setStatus('running');
-    setRes([]); 
     setMsg("パトロール開始..."); 
     stopRef.current = false;
     
     const startTime = Date.now();
-    setProgress({ processed: 0, remainingTime: meta.estimatedTime, startTime });
-
-    let p = 1;
-    let processedCount = 0;
-    let all = [];
-    const BATCH = Math.min(config.apiKeys.length * 4, 30); 
+    let p = progress.currentPage;
+    let processedCount = progress.processed;
+    let all = [...res];
+    
+    // 画像解析があるので並列数は控えめにしつつ、キー数でカバー
+    const BATCH = Math.min(config.apiKeys.length * 2, 10); 
 
     try {
       while(true) {
-        if(stopRef.current) break;
-        setMsg(`ページ ${p} 取得中...`);
+        if(stopRef.current) {
+            setStatus('paused');
+            setMsg("一時停止中");
+            addToast("一時停止しました。再開可能です。", "info");
+            setProgress(prev => ({...prev, currentPage: p, processed: processedCount}));
+            break;
+        }
+
+        setMsg(`ページ ${p} 解析中...`);
         
         const u = new URL('/api/rakuten', window.location.origin);
         u.searchParams.append('shopUrl', url);
@@ -332,17 +316,24 @@ const SinglePatrolView = ({ config, db, addToast }) => {
             d = await r.json();
         } catch(e) {
             console.error("Page fetch error", e);
+            addToast("ページ取得に失敗しました", "error");
+            setStatus('paused'); 
             break; 
         }
 
-        if(!d.products?.length) break;
-
-        setMsg(`ページ ${p}: ${d.products.length}件 分析中 (並列:${BATCH})...`);
+        if(!d.products?.length) {
+            if(!stopRef.current) {
+                setStatus('completed');
+                addToast("全件スキャン完了", "success");
+                if(db) await saveToDb(all);
+            }
+            break;
+        }
         
         for(let i=0; i<d.products.length; i+=BATCH) {
           if(stopRef.current) break;
-          const batchItems = d.products.slice(i, i+BATCH);
           
+          const batchItems = d.products.slice(i, i+BATCH);
           const results = await Promise.all(batchItems.map(b => analyzeItemRisk({productName:b.name, imageUrl:b.imageUrl}, config.apiKeys)));
           const batchResults = batchItems.map((b,x) => ({...b, ...results[x], risk: results[x].risk_level, isCritical: results[x].is_critical}));
           
@@ -351,76 +342,109 @@ const SinglePatrolView = ({ config, db, addToast }) => {
           
           processedCount += batchItems.length;
           const elapsed = (Date.now() - startTime) / 1000;
-          const speed = processedCount / elapsed; 
+          const speed = processedCount / (elapsed || 1);
           const remainingItems = meta.count - processedCount;
           const remTime = speed > 0 ? remainingItems / speed : 0;
           
-          setProgress({ processed: processedCount, remainingTime: remTime, startTime });
+          setProgress({ processed: processedCount, remainingTime: remTime, startTime, currentPage: p });
           
           await new Promise(r=>setTimeout(r, 500));
         }
         
-        if (processedCount >= meta.count) break;
+        if (processedCount >= meta.count) {
+             if(!stopRef.current) {
+                setStatus('completed');
+                addToast("全件スキャン完了", "success");
+                if(db) await saveToDb(all);
+            }
+            break;
+        }
+        
+        if(stopRef.current) continue;
+        
         p++; 
-        if(p > 100) break;
+        if(p > 200) break;
       }
-      
-      if(!stopRef.current && db) {
-        try {
-            await addDoc(collection(db, 'check_sessions'), { type:'url', target:url, createdAt:serverTimestamp(), status:'completed', summary:{total:all.length, high:all.filter(i=>i.risk==='高'||i.risk==='High').length, critical:all.filter(i=>i.isCritical).length}, details:all });
-        } catch(e) { console.error('DB Save failed:', e); }
-      }
-      addToast("スキャン完了", "success");
-      setStatus('completed');
     } catch(e){ 
         console.error(e); 
         addToast(`エラー: ${e.message}`, "error"); 
-        setStatus('idle');
+        setStatus('paused');
     }
-    setMsg("");
+    if (status !== 'paused') setMsg("");
+  };
+
+  const saveToDb = async (data) => {
+      try {
+        await addDoc(collection(db, 'check_sessions'), { 
+            type:'url', 
+            target:url, 
+            createdAt:serverTimestamp(), 
+            status:'completed', 
+            summary:{
+                total:data.length, 
+                high:data.filter(i=>i.risk==='高'||i.risk==='High').length, 
+                critical:data.filter(i=>i.isCritical).length
+            }, 
+            details:data 
+        });
+      } catch(e) { console.error('DB Save failed:', e); }
   };
 
   return (
     <div className="h-full flex flex-col animate-in fade-in duration-500">
       <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm mb-4 flex-shrink-0">
-        <h2 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><ShoppingBag className="w-5 h-5 text-blue-600"/> 通常パトロール (安定モード)</h2>
+        <h2 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><Gavel className="w-5 h-5 text-blue-600"/> 弁理士AIパトロール (画像解析・停止/再開対応)</h2>
         <div className="flex gap-2 mb-4">
-          <input value={url} onChange={e=>setUrl(e.target.value)} disabled={status==='running'||status==='checking'} className="flex-1 p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="ショップURL (例: https://www.rakuten.co.jp/shop-sample)" />
-          {status === 'idle' || status === 'completed' || status === 'ready' ? (
-              <button onClick={checkShop} disabled={status==='checking'} className="px-6 rounded-lg font-bold text-white bg-slate-600 hover:bg-slate-700 transition-colors flex items-center gap-2">
-                {status==='checking' ? <Loader2 className="w-4 h-4 animate-spin"/> : <Search className="w-4 h-4"/>}
-                調査
+          <input value={url} onChange={e=>setUrl(e.target.value)} disabled={status==='running'||status==='paused'} className="flex-1 p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="ショップURL (例: https://www.rakuten.co.jp/shop-sample)" />
+          
+          {status === 'idle' && (
+              <button onClick={checkShop} className="px-6 rounded-lg font-bold text-white bg-slate-600 hover:bg-slate-700 transition-colors flex items-center gap-2">
+                <Search className="w-4 h-4"/> 調査
               </button>
-          ) : (
-              <button onClick={()=>stopRef.current=true} className="px-6 rounded-lg font-bold text-white bg-red-500 hover:bg-red-600 transition-colors">停止</button>
+          )}
+          {status === 'checking' && (
+              <button disabled className="px-6 rounded-lg font-bold text-white bg-slate-400 cursor-not-allowed flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin"/> 調査中
+              </button>
+          )}
+          {status === 'ready' && (
+              <button onClick={start} className="px-6 rounded-lg font-bold text-white bg-blue-600 hover:bg-blue-700 transition-colors flex items-center gap-2">
+                <PlayCircle className="w-4 h-4"/> 開始
+              </button>
+          )}
+          {status === 'running' && (
+              <button onClick={()=>stopRef.current=true} className="px-6 rounded-lg font-bold text-white bg-red-500 hover:bg-red-600 transition-colors flex items-center gap-2">
+                <PauseCircle className="w-4 h-4"/> 停止
+              </button>
+          )}
+          {status === 'paused' && (
+              <button onClick={start} className="px-6 rounded-lg font-bold text-white bg-green-600 hover:bg-green-700 transition-colors flex items-center gap-2">
+                <PlayCircle className="w-4 h-4"/> 再開
+              </button>
+          )}
+          {status === 'completed' && (
+              <button onClick={()=>{setStatus('idle'); setUrl(''); setRes([]);}} className="px-6 rounded-lg font-bold text-white bg-slate-600 hover:bg-slate-700 transition-colors">
+                リセット
+              </button>
           )}
         </div>
-        {status !== 'idle' && status !== 'checking' && (
+
+        {(status !== 'idle' && status !== 'checking') && (
             <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 mb-2 flex items-center justify-between animate-in slide-in-from-top-2">
                 <div className="flex gap-6 text-sm">
                     <div><span className="text-slate-500 block text-xs">商品数</span><span className="font-bold text-lg">{meta.count.toLocaleString()}</span> <span className="text-xs">件</span></div>
-                    <div><span className="text-slate-500 block text-xs">予想時間</span><span className="font-bold text-lg text-slate-700">約{Math.ceil(meta.estimatedTime / 60)}</span> <span className="text-xs">分</span></div>
-                    {status === 'running' && (
+                    <div><span className="text-slate-500 block text-xs">処理済み</span><span className="font-bold text-lg">{progress.processed.toLocaleString()}</span> <span className="text-xs">件</span></div>
+                    {(status === 'running' || status === 'paused') && (
                         <div><span className="text-slate-500 block text-xs">残り時間</span><span className="font-bold text-lg text-blue-600">{formatTime(progress.remainingTime)}</span></div>
                     )}
                 </div>
-                {status === 'ready' && (
-                    <button onClick={start} className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-2 rounded-lg font-bold shadow-md transition-all hover:scale-105 flex items-center gap-2">
-                        <PlayCircle className="w-5 h-5"/> パトロール開始
-                    </button>
-                )}
+                {status === 'paused' && <span className="text-amber-600 font-bold flex items-center gap-1"><PauseCircle className="w-4 h-4"/> 一時停止中</span>}
             </div>
         )}
         {msg && <p className="mt-2 text-sm text-blue-600 font-bold animate-pulse flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin"/> {msg}</p>}
       </div>
       <div className="flex-1 bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
-        {res.length===0 ? 
-            <div className="flex-1 flex flex-col items-center justify-center text-slate-400">
-                <Search className="w-12 h-12 mb-2 opacity-20"/>
-                <p>URLを入力して「調査」ボタンを押してください</p>
-                <p className="text-[10px] mt-2 opacity-60">※有効なAPIキーが多いほど高速に処理されます</p>
-            </div> 
-            : <ResultTable items={res} title={`スキャン結果 (${res.length}/${meta.count})`} />}
+        <ResultTable items={res} title={`スキャン結果 (${res.length}/${meta.count})`} />
       </div>
     </div>
   );
@@ -472,7 +496,7 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
     setStat(p=>({...p, total:sList.length, sid}));
     addLog("🚀 一括パトロール開始");
 
-    const BATCH = Math.min(config.apiKeys.length * 3, 20);
+    const BATCH = Math.min(config.apiKeys.length * 2, 8); 
 
     for(let i=0; i<sList.length; i++) {
       if(stopRef.current) break;
@@ -480,7 +504,7 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
       
       sList[i].status='processing';
       setStat(p=>({...p, cur:sList[i].url, done:i, shops:[...sList]}));
-      addLog(`[${i+1}/${sList.length}] ${sList[i].url} 開始 (並列:${BATCH})`);
+      addLog(`[${i+1}/${sList.length}] ${sList[i].url} 開始`);
       
       let p=1, shopI=[], hasN=true;
       try {
@@ -520,7 +544,7 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
             const res = b.map((x,k)=>({...x, ...results[k], risk:results[k].risk_level, isCritical:results[k].is_critical}));
             shopI=[...shopI,...res];
             
-            await new Promise(r=>setTimeout(r, 500));
+            await new Promise(r=>setTimeout(r, 800));
           }
           
           if(p%5===0) { 
@@ -544,9 +568,8 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
       } catch(e){ 
           sList[i].status='error'; 
           addLog("❌ ショップエラー - スキップします"); 
-          console.error(e);
       }
-      await new Promise(r=>setTimeout(r, 1000));
+      await new Promise(r=>setTimeout(r, 2000));
     }
     setProc(false);
     if(db && sid) await updateDoc(doc(db,'check_sessions',sid), {status:stopRef.current?'paused':'completed', updatedAt:serverTimestamp()});
@@ -558,7 +581,7 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
       <div className="bg-slate-900 text-white p-6 rounded-2xl shadow-lg flex-shrink-0 relative overflow-hidden">
         <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500 rounded-full blur-3xl opacity-10 pointer-events-none translate-x-1/2 -translate-y-1/2"></div>
         <div className="flex justify-between mb-4 relative z-10">
-          <div><h2 className="text-xl font-bold flex items-center gap-2"><Moon className="w-5 h-5 text-yellow-400"/> 一括夜間パトロール (安定モード)</h2></div>
+          <div><h2 className="text-xl font-bold flex items-center gap-2"><Moon className="w-5 h-5 text-yellow-400"/> 一括夜間パトロール (Ultimate)</h2></div>
           <div className="text-right"><div className="text-2xl font-bold font-mono text-blue-400">{stat.items.toLocaleString()}</div><div className="text-[10px] text-slate-400">チェック済み商品数</div></div>
         </div>
         {proc ? (
@@ -641,7 +664,7 @@ const SettingsView = ({ config, setConfig, addToast }) => {
                     ))}
                 </div>
             </div>
-            <p className="text-[10px] text-slate-400 mt-1">※複数のキーを登録すると、自動的に負荷分散を行い高速化・安定化します。</p>
+            <p className="text-[10px] text-slate-400 mt-1">※自動的に負荷分散を行い、超高速で処理します。</p>
         </div>
         <div><label className="text-xs font-bold text-slate-500 mb-1 block">Rakuten App ID</label><input value={config.rakutenAppId} onChange={e=>setConfig({...config, rakutenAppId:e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-slate-200 outline-none"/></div>
         <div><label className="text-xs font-bold text-slate-500 mb-1 block">Firebase Config JSON</label><textarea value={config.firebaseJson} onChange={e=>setConfig({...config, firebaseJson:e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg h-24 text-xs font-mono focus:ring-2 focus:ring-slate-200 outline-none" placeholder='{"apiKey": "...", ...}'/></div>
@@ -701,7 +724,7 @@ export default function App() {
     <div className="h-screen bg-slate-50 font-sans text-slate-800 flex flex-col overflow-hidden">
       <ToastContainer toasts={toasts} removeToast={id=>setToasts(p=>p.filter(t=>t.id!==id))} />
       <header className="bg-white border-b h-16 flex items-center justify-between px-6 sticky top-0 z-20 shadow-sm flex-shrink-0">
-        <div className="flex items-center gap-2 font-bold text-lg text-slate-800"><div className="bg-slate-800 p-1.5 rounded-lg"><Bot className="w-5 h-5 text-white"/></div> Rakuten Patrol Pro <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full ml-2">v{APP_CONFIG.VERSION}</span></div>
+        <div className="flex items-center gap-2 font-bold text-lg text-slate-800"><div className="bg-slate-800 p-1.5 rounded-lg"><Gavel className="w-5 h-5 text-white"/></div> Rakuten Patrol Pro <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full ml-2">v{APP_CONFIG.VERSION}</span></div>
         <div className="flex items-center gap-4 text-xs font-bold text-slate-500">
             <span className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full ${dbSt==='OK'?'bg-emerald-100 text-emerald-700':dbSt==='No Config'?'bg-slate-200 text-slate-600':'bg-amber-100 text-amber-700'}`}>
                 <div className={`w-2 h-2 rounded-full ${dbSt==='OK'?'bg-emerald-500':dbSt==='No Config'?'bg-slate-400':'bg-amber-500'}`}></div>
