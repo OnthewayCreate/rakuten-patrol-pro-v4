@@ -4,7 +4,7 @@ import {
   Lock, LogOut, History, Settings, Search, ExternalLink, Siren, User, X, 
   LayoutDashboard, ChevronRight, Calendar, Folder, FileSearch, ChevronDown, 
   ArrowLeft, Store, Info, PlayCircle, Terminal, Activity, Cloud, ImageIcon, 
-  Bot, List, Power, Moon, Clock, RefreshCw, AlertTriangle, Bug, Timer
+  Bot, List, Power, Moon, Clock, RefreshCw, AlertTriangle, Bug, Timer, Filter
 } from 'lucide-react';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { 
@@ -14,15 +14,15 @@ import {
 
 /**
  * ============================================================================
- * Rakuten Patrol Pro - Production Version (Robust & Enhanced)
+ * Rakuten Patrol Pro - Production Version (Visual Enhanced)
  * ============================================================================
  */
 
 const APP_CONFIG = {
   FIXED_PASSWORD: 'admin', 
-  API_TIMEOUT: 90000, // タイムアウト延長
-  RETRY_LIMIT: 5,     // リトライ回数増加
-  VERSION: '16.1.0-Robust'
+  API_TIMEOUT: 90000, 
+  RETRY_LIMIT: 5,     
+  VERSION: '16.2.0-Visual'
 };
 
 // NGカテゴリ・キーワード定義
@@ -52,8 +52,6 @@ const checkRestrictedCategory = (productName) => {
 // --- API Wrapper (Robust) ---
 async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
   const restrictedReason = checkRestrictedCategory(itemData.productName);
-  
-  // APIキーをローテーションして使用
   const currentKey = apiKeys.length > 0 ? apiKeys[retryCount % apiKeys.length] : '';
 
   try {
@@ -70,9 +68,7 @@ async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
 
     if (res.status === 429 || res.status >= 500) {
       if (retryCount < APP_CONFIG.RETRY_LIMIT) {
-        // エクスポネンシャルバックオフ (待機時間を指数関数的に増やす)
         const waitTime = Math.pow(2, retryCount) * 2000 + (Math.random() * 1000);
-        console.warn(`API Error ${res.status}. Retrying in ${waitTime}ms...`);
         await new Promise(resolve => setTimeout(resolve, waitTime));
         return analyzeItemRisk(itemData, apiKeys, retryCount + 1);
       } else { 
@@ -93,7 +89,6 @@ async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
   }
 }
 
-// 時間フォーマット (秒 -> mm:ss)
 const formatTime = (seconds) => {
   if (!seconds || seconds < 0) return "--:--";
   const m = Math.floor(seconds / 60);
@@ -115,11 +110,12 @@ const ToastContainer = ({ toasts, removeToast }) => (
 
 const RiskBadge = ({ item }) => {
   const { risk, isCritical, is_critical, reason } = item;
-  if (reason && reason.includes("【NG商材】")) return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-slate-800 text-white border border-slate-600 gap-1 items-center"><Bug className="w-3 h-3"/> 禁止商材</span>;
-  if (isCritical || is_critical) return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-purple-100 text-purple-700 border border-purple-200 gap-1 items-center"><Siren className="w-3 h-3"/> 重大</span>;
-  if (risk === '高' || risk === 'High') return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-red-100 text-red-700 border border-red-200">高</span>;
-  if (risk === '中' || risk === 'Medium') return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-amber-100 text-amber-700 border border-amber-200">中</span>;
-  return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700 border border-emerald-200">低</span>;
+  if (reason && reason.includes("【NG商材】")) return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-slate-800 text-white border border-slate-600 gap-1 items-center whitespace-nowrap"><Bug className="w-3 h-3"/> 禁止商材</span>;
+  if (isCritical || is_critical) return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-purple-100 text-purple-700 border border-purple-200 gap-1 items-center whitespace-nowrap"><Siren className="w-3 h-3"/> 重大</span>;
+  if (risk === '高' || risk === 'High') return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-red-100 text-red-700 border border-red-200 whitespace-nowrap">高</span>;
+  if (risk === '中' || risk === 'Medium') return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-amber-100 text-amber-700 border border-amber-200 whitespace-nowrap">中</span>;
+  if (risk === 'エラー') return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-gray-100 text-gray-500 border border-gray-200 whitespace-nowrap">エラー</span>;
+  return <span className="inline-flex px-2 py-1 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700 border border-emerald-200 whitespace-nowrap">低</span>;
 };
 
 const StatCard = ({ title, value, icon: Icon, color, subtext }) => (
@@ -154,17 +150,89 @@ const LoginView = ({ onLogin }) => {
   );
 };
 
+// --- Updated Result Table ---
+const ResultTable = ({ items, title, onBack }) => {
+  const [showAll, setShowAll] = useState(false);
+  
+  // フィルター: 「低」リスク以外を表示 (高、中、エラー、不明)
+  const displayItems = useMemo(() => {
+    if (showAll) return items;
+    return items.filter(i => i.risk !== '低' && i.risk !== 'Low');
+  }, [items, showAll]);
+
+  const dl = () => {
+    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+    let c = "Name,Risk,Reason,URL\n" + items.map(r=>`"${(r.productName||'').replace(/"/g,'""')}",${r.risk},"${(r.reason||'').replace(/"/g,'""')}",${r.itemUrl}`).join('\n');
+    const u = URL.createObjectURL(new Blob([bom, c], {type:"text/csv"}));
+    const a = document.createElement("a"); a.href=u; a.download="report.csv"; a.click();
+  };
+
+  return (
+    <div className="h-full flex flex-col">
+      <div className="mb-4 flex justify-between items-center p-4 pb-0">
+        <div className="flex gap-3 items-center">{onBack&&<button onClick={onBack} className="p-2 bg-white border rounded-lg shadow-sm hover:bg-slate-50"><ArrowLeft className="w-4 h-4"/></button>}<h2 className="font-bold text-slate-800 text-lg">{title}</h2></div>
+        <div className="flex gap-2">
+            <button onClick={() => setShowAll(!showAll)} className={`px-4 py-2 border rounded-lg text-sm font-bold shadow-sm flex items-center gap-2 transition-all ${showAll ? 'bg-slate-800 text-white' : 'bg-white text-slate-600'}`}>
+                <Filter className="w-4 h-4"/> {showAll ? '全件表示中' : 'リスク検知のみ表示'}
+            </button>
+            <button onClick={dl} className="px-4 py-2 bg-white border rounded-lg text-sm font-bold text-slate-600 shadow-sm flex gap-2 hover:bg-slate-50 items-center"><ArrowLeft className="w-4 h-4 rotate-[-90deg]"/> CSV</button>
+        </div>
+      </div>
+      
+      <div className="bg-white border-t border-slate-100 flex-1 overflow-y-auto p-0">
+        {displayItems.length === 0 && !showAll && (
+            <div className="flex flex-col items-center justify-center py-20 text-slate-400">
+                <CheckCircle className="w-12 h-12 mb-2 text-emerald-200"/>
+                <p>リスク商品は見つかりませんでした</p>
+                <button onClick={()=>setShowAll(true)} className="mt-4 text-xs text-blue-500 underline">すべての商品を見る</button>
+            </div>
+        )}
+        <table className="w-full text-left border-collapse text-sm">
+          <thead className="bg-slate-50 sticky top-0 z-10 shadow-sm">
+              <tr>
+                  <th className="p-3 w-16 text-xs font-bold text-slate-500 uppercase text-center">リスク</th>
+                  <th className="p-3 w-20 text-xs font-bold text-slate-500 uppercase text-center">画像</th>
+                  <th className="p-3 w-1/3 text-xs font-bold text-slate-500 uppercase">商品名 / リンク</th>
+                  <th className="p-3 text-xs font-bold text-slate-500 uppercase">AI分析コメント</th>
+              </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+              {displayItems.map((i,x)=>(
+                  <tr key={x} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="p-3 align-middle text-center"><RiskBadge item={i}/></td>
+                      <td className="p-3 align-middle text-center">
+                          {i.imageUrl ? (
+                              <img src={i.imageUrl} alt="" className="w-12 h-12 object-cover rounded border border-slate-200 bg-white" loading="lazy"/>
+                          ) : (
+                              <div className="w-12 h-12 bg-slate-100 rounded border border-slate-200 flex items-center justify-center text-slate-300"><ImageIcon className="w-5 h-5"/></div>
+                          )}
+                      </td>
+                      <td className="p-3 align-middle">
+                          <div className="font-bold mb-1 text-slate-800 line-clamp-2 text-xs leading-relaxed">{i.productName}</div>
+                          {i.itemUrl!=='#'&&<a href={i.itemUrl} target="_blank" className="text-blue-500 text-[10px] hover:underline inline-flex items-center gap-1"><ExternalLink className="w-3 h-3"/> 商品ページへ</a>}
+                      </td>
+                      <td className="p-3 align-middle">
+                          <div className={`text-xs leading-relaxed p-2 rounded ${i.risk==='高'||i.isCritical ? 'bg-red-50 text-red-800 border border-red-100' : 'text-slate-600'}`}>
+                              {i.reason}
+                          </div>
+                      </td>
+                  </tr>
+              ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
 const SinglePatrolView = ({ config, db, addToast }) => {
   const [url, setUrl] = useState('');
-  const [status, setStatus] = useState('idle'); // idle, checking, ready, running, paused, completed
+  const [status, setStatus] = useState('idle');
   const [meta, setMeta] = useState({ count: 0, estimatedTime: 0 });
   const [progress, setProgress] = useState({ processed: 0, remainingTime: 0, startTime: 0 });
   const [res, setRes] = useState([]);
   const [msg, setMsg] = useState('');
   const stopRef = useRef(false);
-
-  // 1商品あたりの推定処理時間(秒) - 並列数やAPI遅延を考慮
-  const SECONDS_PER_ITEM = 1.5;
 
   const checkShop = async () => {
     if(!url || !config.apiKeys.length || !config.rakutenAppId) return addToast("URL, Rakuten AppID, Gemini API Keyが必要です", "error");
@@ -186,7 +254,6 @@ const SinglePatrolView = ({ config, db, addToast }) => {
         const d = await r.json();
         
         const count = d.count || 0;
-        // 推定時間: 並列数を考慮 (BATCH=5程度と仮定)
         const estTime = Math.ceil((count / 5) * 3); 
 
         setMeta({ count, estimatedTime: estTime });
@@ -206,15 +273,12 @@ const SinglePatrolView = ({ config, db, addToast }) => {
     setMsg("パトロール開始..."); 
     stopRef.current = false;
     
-    // 開始時刻記録
     const startTime = Date.now();
     setProgress({ processed: 0, remainingTime: meta.estimatedTime, startTime });
 
     let p = 1;
     let processedCount = 0;
     let all = [];
-    
-    // 並列数を下げて安定性を重視 (5並列)
     const BATCH = 5; 
 
     try {
@@ -222,20 +286,17 @@ const SinglePatrolView = ({ config, db, addToast }) => {
         if(stopRef.current) break;
         setMsg(`ページ ${p} 取得中...`);
         
-        // ページデータ取得
         const u = new URL('/api/rakuten', window.location.origin);
         u.searchParams.append('shopUrl', url);
         u.searchParams.append('appId', config.rakutenAppId);
         u.searchParams.append('page', p);
         
-        // エラーハンドリング付きFetch
         let d = null;
         try {
             const r = await fetch(u);
             if(!r.ok) throw new Error('Fetch Error');
             d = await r.json();
         } catch(e) {
-            // ページ取得失敗時はリトライせずに終了またはスキップ
             console.error("Page fetch error", e);
             break; 
         }
@@ -244,40 +305,28 @@ const SinglePatrolView = ({ config, db, addToast }) => {
 
         setMsg(`ページ ${p}: ${d.products.length}件 分析中...`);
         
-        // バッチ処理
         for(let i=0; i<d.products.length; i+=BATCH) {
           if(stopRef.current) break;
-          
           const batchItems = d.products.slice(i, i+BATCH);
-          
-          // AI分析実行
           const results = await Promise.all(batchItems.map(b => analyzeItemRisk({productName:b.name, imageUrl:b.imageUrl}, config.apiKeys)));
-          
           const batchResults = batchItems.map((b,x) => ({...b, ...results[x], risk: results[x].risk_level, isCritical: results[x].is_critical}));
           
           all = [...all, ...batchResults];
           setRes(prev => [...prev, ...batchResults]);
           
-          // 進捗更新
           processedCount += batchItems.length;
           const elapsed = (Date.now() - startTime) / 1000;
-          const speed = processedCount / elapsed; // items per second
+          const speed = processedCount / elapsed; 
           const remainingItems = meta.count - processedCount;
           const remTime = speed > 0 ? remainingItems / speed : 0;
           
-          setProgress({ 
-              processed: processedCount, 
-              remainingTime: remTime,
-              startTime 
-          });
-
-          // API制限回避のための待機 (重要)
+          setProgress({ processed: processedCount, remainingTime: remTime, startTime });
           await new Promise(r=>setTimeout(r, 1500));
         }
         
         if (processedCount >= meta.count) break;
         p++; 
-        if(p > 100) break; // 安全策
+        if(p > 100) break;
       }
       
       if(!stopRef.current && db) {
@@ -299,10 +348,8 @@ const SinglePatrolView = ({ config, db, addToast }) => {
     <div className="h-full flex flex-col animate-in fade-in duration-500">
       <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm mb-4 flex-shrink-0">
         <h2 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><ShoppingBag className="w-5 h-5 text-blue-600"/> 通常パトロール (安定モード)</h2>
-        
         <div className="flex gap-2 mb-4">
           <input value={url} onChange={e=>setUrl(e.target.value)} disabled={status==='running'||status==='checking'} className="flex-1 p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="ショップURL (例: https://www.rakuten.co.jp/shop-sample)" />
-          
           {status === 'idle' || status === 'completed' || status === 'ready' ? (
               <button onClick={checkShop} disabled={status==='checking'} className="px-6 rounded-lg font-bold text-white bg-slate-600 hover:bg-slate-700 transition-colors flex items-center gap-2">
                 {status==='checking' ? <Loader2 className="w-4 h-4 animate-spin"/> : <Search className="w-4 h-4"/>}
@@ -312,27 +359,15 @@ const SinglePatrolView = ({ config, db, addToast }) => {
               <button onClick={()=>stopRef.current=true} className="px-6 rounded-lg font-bold text-white bg-red-500 hover:bg-red-600 transition-colors">停止</button>
           )}
         </div>
-
-        {/* 調査結果・見積もり表示エリア */}
         {status !== 'idle' && status !== 'checking' && (
             <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 mb-2 flex items-center justify-between animate-in slide-in-from-top-2">
                 <div className="flex gap-6 text-sm">
-                    <div>
-                        <span className="text-slate-500 block text-xs">商品数</span>
-                        <span className="font-bold text-lg">{meta.count.toLocaleString()}</span> <span className="text-xs">件</span>
-                    </div>
-                    <div>
-                        <span className="text-slate-500 block text-xs">予想時間</span>
-                        <span className="font-bold text-lg text-slate-700">約{Math.ceil(meta.estimatedTime / 60)}</span> <span className="text-xs">分</span>
-                    </div>
+                    <div><span className="text-slate-500 block text-xs">商品数</span><span className="font-bold text-lg">{meta.count.toLocaleString()}</span> <span className="text-xs">件</span></div>
+                    <div><span className="text-slate-500 block text-xs">予想時間</span><span className="font-bold text-lg text-slate-700">約{Math.ceil(meta.estimatedTime / 60)}</span> <span className="text-xs">分</span></div>
                     {status === 'running' && (
-                        <div>
-                            <span className="text-slate-500 block text-xs">残り時間</span>
-                            <span className="font-bold text-lg text-blue-600">{formatTime(progress.remainingTime)}</span>
-                        </div>
+                        <div><span className="text-slate-500 block text-xs">残り時間</span><span className="font-bold text-lg text-blue-600">{formatTime(progress.remainingTime)}</span></div>
                     )}
                 </div>
-                
                 {status === 'ready' && (
                     <button onClick={start} className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-2 rounded-lg font-bold shadow-md transition-all hover:scale-105 flex items-center gap-2">
                         <PlayCircle className="w-5 h-5"/> パトロール開始
@@ -340,10 +375,8 @@ const SinglePatrolView = ({ config, db, addToast }) => {
                 )}
             </div>
         )}
-
         {msg && <p className="mt-2 text-sm text-blue-600 font-bold animate-pulse flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin"/> {msg}</p>}
       </div>
-      
       <div className="flex-1 bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
         {res.length===0 ? 
             <div className="flex-1 flex flex-col items-center justify-center text-slate-400">
@@ -385,7 +418,6 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
 
   const run = async () => {
     let sList = stat.shops, sid = stat.sid, totalI = stat.items;
-    
     if(!config.apiKeys.length || !config.rakutenAppId) return addToast("設定でAPIキーとAppIDを入力してください", "error");
 
     if(!resume) {
@@ -404,7 +436,6 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
     setStat(p=>({...p, total:sList.length, sid}));
     addLog("🚀 一括パトロール開始");
 
-    // バッチサイズを小さくして安定化 (4並列)
     const BATCH = Math.min(config.apiKeys.length * 2, 4);
 
     for(let i=0; i<sList.length; i++) {
@@ -419,8 +450,6 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
       try {
         while(hasN) {
           if(stopRef.current) break;
-          
-          // エラーハンドリング強化
           let d = null;
           try {
               const u = new URL('/api/rakuten', window.location.origin);
@@ -434,7 +463,7 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
           } catch(fetchErr) {
              console.error(fetchErr);
              addLog(`⚠️ ページ取得エラー (P${p}) - スキップ`);
-             hasN = false; // ループを抜けて次のショップへ
+             hasN = false;
              break;
           }
 
@@ -443,8 +472,6 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
           for(let j=0; j<d.products.length; j+=BATCH) {
             if(stopRef.current) break;
             const b = d.products.slice(j, j+BATCH);
-            
-            // Analyze with individual error catching to prevent full stop
             const results = await Promise.all(b.map(async x => {
                 try {
                     return await analyzeItemRisk({productName:x.name, imageUrl:x.imageUrl}, config.apiKeys);
@@ -455,12 +482,9 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
 
             const res = b.map((x,k)=>({...x, ...results[k], risk:results[k].risk_level, isCritical:results[k].is_critical}));
             shopI=[...shopI,...res];
-            
-            // 待機時間を設ける
             await new Promise(r=>setTimeout(r, 1000));
           }
           
-          // 中間保存
           if(p%5===0) { 
               sList[i].itemCount=shopI.length; 
               await save(sid, sList, {total:totalI+shopI.length, high:0, critical:0}); 
@@ -475,11 +499,7 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
         }
         
         if(!stopRef.current) {
-          sList[i].status='completed'; 
-          sList[i].itemCount=shopI.length; 
-          totalI+=shopI.length;
-          
-          // High Riskのみ保存してデータ量を削減
+          sList[i].status='completed'; sList[i].itemCount=shopI.length; totalI+=shopI.length;
           await save(sid, sList, {total:totalI, high:0, critical:0}, shopI.filter(x=>x.isCritical||x.risk==='高'||x.risk==='High'));
           addLog(`✅ 完了: ${shopI.length}件`);
         }
@@ -488,10 +508,8 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
           addLog("❌ ショップエラー - スキップします"); 
           console.error(e);
       }
-      // ショップ間の待機
       await new Promise(r=>setTimeout(r, 2000));
     }
-    
     setProc(false);
     if(db && sid) await updateDoc(doc(db,'check_sessions',sid), {status:stopRef.current?'paused':'completed', updatedAt:serverTimestamp()});
     addToast(stopRef.current?"一時停止":"全ショップ完了", "success");
@@ -550,33 +568,6 @@ const SettingsView = ({ config, setConfig, addToast }) => {
         <div><label className="text-xs font-bold text-slate-500 mb-1 block">Rakuten App ID</label><input value={config.rakutenAppId} onChange={e=>setConfig({...config, rakutenAppId:e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-slate-200 outline-none"/></div>
         <div><label className="text-xs font-bold text-slate-500 mb-1 block">Firebase Config JSON</label><textarea value={config.firebaseJson} onChange={e=>setConfig({...config, firebaseJson:e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg h-24 text-xs font-mono focus:ring-2 focus:ring-slate-200 outline-none" placeholder='{"apiKey": "...", ...}'/></div>
         <button onClick={save} className="w-full py-3 bg-slate-800 text-white font-bold rounded-lg hover:bg-slate-700 transition-colors shadow-lg">設定を保存</button>
-      </div>
-    </div>
-  );
-};
-
-const ResultTable = ({ items, title, onBack }) => {
-  const [f, setF] = useState('all');
-  const d = useMemo(() => f==='crit' ? items.filter(i=>i.isCritical||i.risk==='高'||i.risk==='High') : items, [items, f]);
-  const dl = () => {
-    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
-    let c = "Name,Risk,Reason,URL\n" + d.map(r=>`"${(r.productName||'').replace(/"/g,'""')}",${r.risk},"${(r.reason||'').replace(/"/g,'""')}",${r.itemUrl}`).join('\n');
-    const u = URL.createObjectURL(new Blob([bom, c], {type:"text/csv"}));
-    const a = document.createElement("a"); a.href=u; a.download="report.csv"; a.click();
-  };
-  return (
-    <div className="h-full flex flex-col">
-      <div className="mb-4 flex justify-between items-center p-4 pb-0">
-        <div className="flex gap-3 items-center">{onBack&&<button onClick={onBack} className="p-2 bg-white border rounded-lg shadow-sm hover:bg-slate-50"><ArrowLeft className="w-4 h-4"/></button>}<h2 className="font-bold text-slate-800 text-lg">{title}</h2></div>
-        <button onClick={dl} className="px-4 py-2 bg-white border rounded-lg text-sm font-bold text-slate-600 shadow-sm flex gap-2 hover:bg-slate-50 items-center"><ArrowLeft className="w-4 h-4 rotate-[-90deg]"/> CSV出力</button>
-      </div>
-      <div className="flex gap-2 mb-2 px-4"><button onClick={()=>setF('all')} className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${f==='all'?'bg-slate-800 text-white shadow-md':'bg-white border text-slate-500 hover:bg-slate-50'}`}>すべて ({items.length})</button><button onClick={()=>setF('crit')} className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${f==='crit'?'bg-red-600 text-white shadow-md':'bg-white border text-red-500 hover:bg-red-50'}`}>高リスクのみ ({items.filter(i=>i.isCritical||i.risk==='高').length})</button></div>
-      <div className="bg-white border-t border-slate-100 flex-1 overflow-y-auto p-0">
-        <table className="w-full text-left border-collapse text-sm">
-          <thead className="bg-slate-50 sticky top-0 z-10 shadow-sm"><tr><th className="p-3 text-xs font-bold text-slate-500 uppercase">リスク</th><th className="p-3 text-xs font-bold text-slate-500 uppercase">商品情報</th><th className="p-3 text-xs font-bold text-slate-500 uppercase">分析結果</th></tr></thead>
-          <tbody className="divide-y divide-slate-100">{d.map((i,x)=><tr key={x} className="hover:bg-slate-50/80 transition-colors"><td className="p-3 align-top w-20"><RiskBadge item={i}/></td><td className="p-3 align-top w-1/3"><div className="font-bold mb-1 text-slate-800 line-clamp-2">{i.productName}</div>{i.itemUrl!=='#'&&<a href={i.itemUrl} target="_blank" className="text-blue-500 text-xs hover:underline inline-flex items-center gap-1"><ExternalLink className="w-3 h-3"/> Link</a>}</td><td className="p-3 align-top text-xs text-slate-600 leading-relaxed">{i.reason}</td></tr>)}</tbody>
-        </table>
-        {d.length === 0 && <div className="p-10 text-center text-slate-400 text-sm">該当するアイテムはありません</div>}
       </div>
     </div>
   );
