@@ -10,13 +10,11 @@ export default async function handler(request, response) {
 
   const endpoint = 'https://app.rakuten.co.jp/services/api/IchibaItem/Search/20170706';
   
-  // URLからショップコードを抽出（簡易実装）
   let shopCode = shopUrl;
   try {
     if (shopUrl && shopUrl.includes('rakuten.co.jp')) {
         const urlObj = new URL(shopUrl);
         const parts = urlObj.pathname.split('/').filter(p => p);
-        // gold/shopCode や shopCode/ のパターンに対応
         shopCode = parts.find(p => p !== 'gold') || shopCode;
     }
   } catch (e) {
@@ -46,7 +44,6 @@ export default async function handler(request, response) {
       price: item.Item.itemPrice
     }));
 
-    // 商品総数(count)も含めて返す
     return response.status(200).json({ 
         products, 
         count: data.count || 0,
