@@ -16,7 +16,7 @@ import {
 
 /**
  * ============================================================================
- * Rakuten Patrol Pro - Ultimate UI & Control Edition (v19.6)
+ * Rakuten Patrol Pro - Crash Fix & Robust Edition (v19.7)
  * ============================================================================
  */
 
@@ -24,17 +24,31 @@ const APP_CONFIG = {
   FIXED_PASSWORD: 'admin', 
   API_TIMEOUT: 45000, 
   RETRY_LIMIT: 3,     
-  VERSION: '19.6.0-UltimateUI'
+  VERSION: '19.7.0-CrashFix'
 };
 
 const parseFirebaseConfig = (input) => {
   if (!input) return null;
   try { return JSON.parse(input); } catch (e) {
     try {
+      // JSオブジェクト形式でも許容する柔軟なパース
       let jsonStr = input.replace(/^(const|var|let)\s+\w+\s*=\s*/, '').replace(/;\s*$/, '').replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":').replace(/'/g, '"');
       return JSON.parse(jsonStr);
     } catch (e2) { return null; }
   }
+};
+
+// 安全な日付フォーマット関数 (ホワイトアウト防止の要)
+const formatDate = (timestamp) => {
+  if (!timestamp) return '日時不明 (処理中)';
+  try {
+    if (typeof timestamp.toDate === 'function') return timestamp.toDate().toLocaleString();
+    if (timestamp.seconds) return new Date(timestamp.seconds * 1000).toLocaleString();
+    if (timestamp instanceof Date) return timestamp.toLocaleString();
+  } catch (e) {
+    return '日時形式エラー';
+  }
+  return '日時不明';
 };
 
 // --- プログレスバー ---
@@ -144,20 +158,16 @@ async function checkApiKeyHealth(apiKey) {
     }
 }
 
-// 楽天AppIDチェック
 async function checkRakutenAppId(appId) {
     if(!appId) return { ok: false, msg: 'App IDが空です' };
     try {
-        // テスト用に楽天24のURLを使用
         const testUrl = "https://www.rakuten.co.jp/rakuten24/";
         const u = new URL('/api/rakuten', window.location.origin);
         u.searchParams.append('shopUrl', testUrl);
         u.searchParams.append('appId', appId);
         u.searchParams.append('page', 1);
-        
         const r = await fetch(u);
         const d = await r.json();
-        
         if (r.ok && !d.error && !d.error_description) {
             return { ok: true, msg: 'OK' };
         } else {
@@ -167,15 +177,6 @@ async function checkRakutenAppId(appId) {
         return { ok: false, msg: e.message };
     }
 }
-
-const formatTime = (seconds) => {
-  if (!seconds || seconds < 0 || !isFinite(seconds)) return "--:--";
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  if (h > 0) return `${h}時間${m}分`;
-  return `${m}分${s}秒`;
-};
 
 // --- Components ---
 const ToastContainer = ({ toasts, removeToast }) => (
@@ -320,6 +321,7 @@ const SinglePatrolView = ({ config, db, addToast }) => {
     let all = [...res];
     let currentSessionId = sessionId;
 
+    // 初回のみDBドキュメント作成
     if (db && !currentSessionId) {
         try {
             const docRef = await addDoc(collection(db, 'check_sessions'), { 
@@ -331,7 +333,7 @@ const SinglePatrolView = ({ config, db, addToast }) => {
         } catch(e) { console.error("DB Init Error", e); }
     }
     
-    const BATCH = Math.min(config.apiKeys.length * 10, 50); 
+    const BATCH = Math.min(config.apiKeys.length * 10, 60); 
 
     try {
       while(true) {
@@ -470,7 +472,7 @@ const SinglePatrolView = ({ config, db, addToast }) => {
           {status === 'idle' && <button onClick={checkShop} className="px-6 rounded-lg font-bold text-white bg-slate-600 hover:bg-slate-700 transition-colors flex items-center gap-2"><Search className="w-4 h-4"/> 調査</button>}
           {status === 'checking' && <button disabled className="px-6 rounded-lg font-bold text-white bg-slate-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin"/> ...</button>}
           {status === 'ready' && <button onClick={start} className="px-6 rounded-lg font-bold text-white bg-blue-600 hover:bg-blue-700 transition-colors flex items-center gap-2"><PlayCircle className="w-4 h-4"/> 開始</button>}
-          {status === 'running' && <button onClick={()=>{setStatus('paused'); stopRef.current=true;}} className="px-6 rounded-lg font-bold text-white bg-amber-500 hover:bg-amber-600 transition-colors flex items-center gap-2"><PauseCircle className="w-4 h-4"/> 停止</button>}
+          {status === 'running' && <button onClick={()=>stopRef.current=true} className="px-6 rounded-lg font-bold text-white bg-amber-500 hover:bg-amber-600 transition-colors flex items-center gap-2"><PauseCircle className="w-4 h-4"/> 停止</button>}
           {status === 'paused' && (
               <>
                 <button onClick={start} className="px-6 rounded-lg font-bold text-white bg-green-600 hover:bg-green-700 transition-colors flex items-center gap-2"><PlayCircle className="w-4 h-4"/> 再開</button>
@@ -529,11 +531,9 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
   const save = async (sid, shops, sum, newD=[]) => {
     if(!db || !sid) return;
     try {
+      const { arrayUnion } = await import('firebase/firestore');
       const up = { shopList:shops, summary:sum, updatedAt:serverTimestamp() };
-      if(newD.length) { 
-          const { arrayUnion } = await import('firebase/firestore');
-          up.details = arrayUnion(...newD); 
-      }
+      if(newD.length) { up.details = arrayUnion(...newD); }
       await updateDoc(doc(db,'check_sessions',sid), up);
     } catch(e){ console.error(e); }
   };
@@ -836,10 +836,9 @@ export default function App() {
           const c = parseFirebaseConfig(json);
           if(!c) throw new Error("JSON形式エラー");
           
-          // 既存アプリがあれば削除（再接続のため）
           if(getApps().length > 0) {
               const currentApp = getApp();
-              await deleteApp(currentApp); // 完全なリセットは難しいが試行
+              await deleteApp(currentApp); 
           }
           
           const app = initializeApp(c);
@@ -848,11 +847,13 @@ export default function App() {
           setDbSt('OK');
           toast("データベースに接続しました", "success");
           
+          // 修正: エラー時にhistをクリアしてホワイトアウト防止
           onSnapshot(query(collection(firestore,'check_sessions'), orderBy('createdAt','desc'), limit(20)), s => { 
               setHist(s.docs.map(d=>({id:d.id,...d.data()}))); 
           }, err => {
               console.error(err);
               setDbSt('ERR');
+              setHist([]); // 安全策
               toast("DB接続エラー: 権限を確認してください", "error");
           });
       } catch(e) {
@@ -869,7 +870,6 @@ export default function App() {
     setConf({apiKeys:k, rakutenAppId:r, firebaseJson:f});
     if(localStorage.getItem('app_auth')==='true') setLogin(true);
     
-    // 初回自動接続トライ
     if(f) connectToFirebase(f);
     else setDbSt('No Config');
   }, []);
@@ -879,8 +879,10 @@ export default function App() {
   const today = new Date().toLocaleDateString();
   const todayScans = hist.filter(h => {
       if(!h.createdAt) return false;
-      const d = h.createdAt.toDate ? h.createdAt.toDate() : new Date(h.createdAt.seconds * 1000);
-      return d.toLocaleDateString() === today;
+      try {
+        const d = h.createdAt.toDate ? h.createdAt.toDate() : new Date(h.createdAt.seconds * 1000);
+        return d.toLocaleDateString() === today;
+      } catch(e) { return false; }
   });
 
   return (
@@ -927,7 +929,7 @@ export default function App() {
               <h2 className="font-bold mb-6 flex items-center gap-2 text-lg"><History className="w-5 h-5"/> 実行履歴</h2>
               <div className="space-y-3">
                 {hist.length === 0 && <div className="text-center text-slate-400 py-10">履歴はありません</div>}
-                {hist.map(h=><div key={h.id} onClick={()=>{setIns(h);setTab('inspect');}} className="flex justify-between p-4 border border-slate-100 rounded-xl hover:bg-slate-50 cursor-pointer transition-colors group"><div className="flex gap-4 items-center"><div className={`p-3 rounded-lg ${h.type==='bulk_url'?'bg-purple-100 text-purple-600':'bg-blue-100 text-blue-600'}`}>{h.type==='bulk_url'?<Layers className="w-5 h-5"/>:<ShoppingBag className="w-5 h-5"/>}</div><div><div className="truncate font-bold text-slate-800">{h.target}</div><div className="text-xs text-slate-400 mt-0.5">{h.createdAt ? (h.createdAt.toDate ? h.createdAt.toDate().toLocaleString() : new Date(h.createdAt.seconds*1000).toLocaleString()) : '日時不明'}</div></div></div><div className="flex gap-3 items-center text-xs"><span className={`px-3 py-1 rounded-full font-bold ${h.status==='completed'?'bg-emerald-100 text-emerald-700':'bg-amber-100 text-amber-700'}`}>{STATUS_MAP[h.status] || h.status}</span>{(h.status==='paused'||h.status==='aborted')&&h.type==='bulk_url'&&<button onClick={(e)=>{e.stopPropagation();setRes(h);setTab('bulk');}} className="px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold">再開</button>}<ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-slate-500"/></div></div>)}
+                {hist.map(h=><div key={h.id} onClick={()=>{setIns(h);setTab('inspect');}} className="flex justify-between p-4 border border-slate-100 rounded-xl hover:bg-slate-50 cursor-pointer transition-colors group"><div className="flex gap-4 items-center"><div className={`p-3 rounded-lg ${h.type==='bulk_url'?'bg-purple-100 text-purple-600':'bg-blue-100 text-blue-600'}`}>{h.type==='bulk_url'?<Layers className="w-5 h-5"/>:<ShoppingBag className="w-5 h-5"/>}</div><div><div className="truncate font-bold text-slate-800">{h.target}</div><div className="text-xs text-slate-400 mt-0.5">{formatDate(h.createdAt)}</div></div></div><div className="flex gap-3 items-center text-xs"><span className={`px-3 py-1 rounded-full font-bold ${h.status==='completed'?'bg-emerald-100 text-emerald-700':'bg-amber-100 text-amber-700'}`}>{STATUS_MAP[h.status] || h.status}</span>{(h.status==='paused'||h.status==='aborted')&&h.type==='bulk_url'&&<button onClick={(e)=>{e.stopPropagation();setRes(h);setTab('bulk');}} className="px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold">再開</button>}<ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-slate-500"/></div></div>)}
               </div>
             </div>
           )}
