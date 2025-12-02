@@ -6,9 +6,10 @@ import {
   ArrowLeft, Store, Info, PlayCircle, Terminal, Activity, Cloud, ImageIcon, 
   Bot, List, Power, Moon, Clock, RefreshCw, AlertTriangle, Bug, Timer, Filter,
   Check, Wifi, WifiOff, PauseCircle, Download, Gavel, Scale, Eye, EyeOff, FastForward,
-  Layers, RotateCcw, StopCircle, Database, ToggleLeft, ToggleRight, AlertOctagon
+  Layers, RotateCcw, StopCircle, Database, ToggleLeft, ToggleRight, PowerOff
 } from 'lucide-react';
 import { initializeApp, getApps, getApp, deleteApp } from 'firebase/app';
+import { getAuth, signInAnonymously } from 'firebase/auth';
 import { 
   getFirestore, collection, addDoc, query, orderBy, limit, onSnapshot, 
   serverTimestamp, where, getDocs, deleteDoc, doc, updateDoc, getDoc 
@@ -16,7 +17,7 @@ import {
 
 /**
  * ============================================================================
- * Rakuten Patrol Pro - ErrorBoundary & Safe Mode (v19.9)
+ * Rakuten Patrol Pro - Final Ultimate Edition (v20.0)
  * ============================================================================
  */
 
@@ -24,71 +25,35 @@ const APP_CONFIG = {
   FIXED_PASSWORD: 'admin', 
   API_TIMEOUT: 45000, 
   RETRY_LIMIT: 3,     
-  VERSION: '19.9.0-SafeMode'
+  VERSION: '20.0.0-Final'
 };
 
-// --- エラー境界コンポーネント (ホワイトアウト防止の最後の砦) ---
-class ErrorBoundary extends React.Component {
-  constructor(props) {
-    super(props);
-    this.state = { hasError: false, error: null };
-  }
-
-  static getDerivedStateFromError(error) {
-    return { hasError: true, error };
-  }
-
-  componentDidCatch(error, errorInfo) {
-    console.error("Uncaught error:", error, errorInfo);
-  }
-
-  handleReset = () => {
-      // 問題のある設定を消してリロード
-      localStorage.removeItem('firebase_config');
-      window.location.reload();
-  };
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
-          <div className="bg-white p-8 rounded-2xl shadow-2xl max-w-md w-full text-center border border-red-100">
-            <div className="bg-red-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6">
-                <AlertOctagon className="w-8 h-8 text-red-600" />
-            </div>
-            <h2 className="text-2xl font-bold text-slate-800 mb-2">システムエラーが発生しました</h2>
-            <p className="text-slate-500 mb-6 text-sm leading-relaxed">
-              データの読み込み中に予期せぬ問題が発生しました。<br/>
-              設定データが破損している可能性があります。
-            </p>
-            <div className="bg-slate-100 p-4 rounded-lg text-left text-[10px] font-mono mb-6 overflow-auto max-h-32 text-slate-600 border border-slate-200">
-                {this.state.error && this.state.error.toString()}
-            </div>
-            <button 
-              onClick={this.handleReset} 
-              className="w-full bg-red-600 hover:bg-red-700 text-white py-3 rounded-lg font-bold transition-all shadow-lg flex items-center justify-center gap-2"
-            >
-              <RefreshCw className="w-4 h-4"/> 設定をリセットして復旧
-            </button>
-          </div>
-        </div>
-      );
-    }
-    return this.props.children; 
-  }
-}
-
+// 強力な設定パーサー: JSONだけでなくJSオブジェクト形式も許容して解析
 const parseFirebaseConfig = (input) => {
   if (!input) return null;
-  try { return JSON.parse(input); } catch (e) {
+  try { 
+    // まずJSONとしてトライ
+    return JSON.parse(input); 
+  } catch (e) {
     try {
-      let jsonStr = input.replace(/^(const|var|let)\s+\w+\s*=\s*/, '').replace(/;\s*$/, '').replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":').replace(/'/g, '"');
+      // JSオブジェクト形式 (const firebaseConfig = { ... }) の場合の整形
+      // 1. 変数宣言を除去
+      let jsonStr = input.replace(/^(const|var|let)\s+\w+\s*=\s*/, '');
+      // 2. 末尾のセミコロンを除去
+      jsonStr = jsonStr.replace(/;\s*$/, '');
+      // 3. キーをダブルクォートで囲む ( key: -> "key": )
+      jsonStr = jsonStr.replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":');
+      // 4. シングルクォートをダブルクォートに置換
+      jsonStr = jsonStr.replace(/'/g, '"');
+      // 5. 末尾のカンマなどを掃除（簡易的）
+      jsonStr = jsonStr.replace(/,\s*}/g, '}');
+      
       return JSON.parse(jsonStr);
     } catch (e2) { return null; }
   }
 };
 
-// 安全な日付変換 (絶対にクラッシュさせない)
+// 安全な日付変換
 const safeDate = (timestamp) => {
     if (!timestamp) return null;
     try {
@@ -240,6 +205,15 @@ async function checkRakutenAppId(appId) {
     }
 }
 
+const formatTime = (seconds) => {
+  if (!seconds || seconds < 0 || !isFinite(seconds)) return "--:--";
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (h > 0) return `${h}時間${m}分`;
+  return `${m}分${s}秒`;
+};
+
 // --- Components ---
 const ToastContainer = ({ toasts, removeToast }) => (
   <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-3 pointer-events-none">
@@ -295,6 +269,7 @@ const LoginView = ({ onLogin }) => {
 
 const ResultTable = ({ items, title, onBack }) => {
   const [showAll, setShowAll] = useState(false);
+  
   const displayItems = useMemo(() => {
     if (showAll) return items.slice(0, 500); 
     return items.filter(i => i.risk_level !== '低' && i.risk_level !== 'Low');
@@ -862,9 +837,14 @@ const SettingsView = ({ config, setConfig, addToast, connectToFirebase }) => {
         <div>
             <div className="flex justify-between items-end mb-1">
                 <label className="text-xs font-bold text-slate-500">Firebase設定 (JSON)</label>
-                <button onClick={handleDbToggle} disabled={dbLoading} className={`text-xs px-3 py-1 rounded flex items-center gap-1 transition-colors ${dbLoading ? 'bg-slate-200' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'}`}>
-                    {dbLoading ? <Loader2 className="w-3 h-3 animate-spin"/> : <Database className="w-3 h-3"/>} データベース接続
-                </button>
+                <div className="flex items-center gap-2">
+                    {config.firebaseJson && (
+                        <button onClick={()=>setConfig({...config, firebaseJson: ''})} className="text-xs bg-red-50 hover:bg-red-100 text-red-600 px-2 py-1 rounded flex items-center gap-1 transition-colors"><Trash2 className="w-3 h-3"/> クリア</button>
+                    )}
+                    <button onClick={handleDbToggle} disabled={dbLoading} className={`text-xs px-3 py-1 rounded flex items-center gap-1 transition-colors ${dbLoading ? 'bg-slate-200' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'}`}>
+                        {dbLoading ? <Loader2 className="w-3 h-3 animate-spin"/> : <Database className="w-3 h-3"/>} データベース接続
+                    </button>
+                </div>
             </div>
             <textarea value={config.firebaseJson} onChange={e=>setConfig({...config, firebaseJson:e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg h-24 text-xs font-mono focus:ring-2 focus:ring-slate-200 outline-none" placeholder='{"apiKey": "...", ...}'/>
         </div>
@@ -876,14 +856,6 @@ const SettingsView = ({ config, setConfig, addToast, connectToFirebase }) => {
 
 // --- Main App Component ---
 export default function App() {
-  return (
-    <ErrorBoundary>
-       <MainContent />
-    </ErrorBoundary>
-  );
-}
-
-function MainContent() {
   const [login, setLogin] = useState(false);
   const [toasts, setToasts] = useState([]);
   const [tab, setTab] = useState('dashboard');
@@ -893,6 +865,7 @@ function MainContent() {
   const [hist, setHist] = useState([]); 
   const [ins, setIns] = useState(null);
   const [res, setRes] = useState(null);
+  
   const stopRef = useRef(false);
 
   const toast = (m,t='info') => { const id=Date.now(); setToasts(p=>[...p,{id,message:m,type:t}]); setTimeout(()=>setToasts(p=>p.filter(x=>x.id!==id)),4000); };
@@ -904,20 +877,26 @@ function MainContent() {
           if(!c) throw new Error("JSON形式エラー");
           
           if(getApps().length > 0) {
-              const currentApp = getApp();
-              // deleteAppは非同期だが、ここでは簡易的に再初期化を試みる
-              try { await deleteApp(currentApp); } catch(e){}
+              // アプリ重複時は既存インスタンスを取得
+              const app = getApp(); 
+              const auth = getAuth(app);
+              // 匿名ログイン
+              await signInAnonymously(auth);
+              const firestore = getFirestore(app);
+              setDb(firestore);
+              setDbSt('OK');
+          } else {
+              const app = initializeApp(c);
+              const auth = getAuth(app);
+              await signInAnonymously(auth); // 匿名ログイン実行
+              const firestore = getFirestore(app);
+              setDb(firestore);
+              setDbSt('OK');
           }
+          toast("データベースに接続しました (匿名認証)", "success");
           
-          const app = initializeApp(c);
-          const firestore = getFirestore(app);
-          setDb(firestore);
-          setDbSt('OK');
-          toast("データベースに接続しました", "success");
-          
-          // snapshotOptionsでestimateを指定し、nullを防ぐ
           onSnapshot(
-              query(collection(firestore,'check_sessions'), orderBy('createdAt','desc'), limit(20)), 
+              query(collection(db || getFirestore(getApp()),'check_sessions'), orderBy('createdAt','desc'), limit(20)), 
               { includeMetadataChanges: true }, 
               s => { 
                   setHist(s.docs.map(d => ({
@@ -929,7 +908,7 @@ function MainContent() {
                   console.error(err);
                   setDbSt('ERR');
                   setHist([]);
-                  toast("DB接続エラー: 権限を確認してください", "error");
+                  toast(`DB接続エラー: ${err.code}`, "error");
               }
           );
       } catch(e) {
