@@ -6,9 +6,9 @@ import {
   ArrowLeft, Store, Info, PlayCircle, Terminal, Activity, Cloud, ImageIcon, 
   Bot, List, Power, Moon, Clock, RefreshCw, AlertTriangle, Bug, Timer, Filter,
   Check, Wifi, WifiOff, PauseCircle, Download, Gavel, Scale, Eye, EyeOff, FastForward,
-  Layers, RotateCcw, StopCircle
+  Layers, RotateCcw, StopCircle, Database, ToggleLeft, ToggleRight
 } from 'lucide-react';
-import { initializeApp, getApps, getApp } from 'firebase/app';
+import { initializeApp, getApps, getApp, deleteApp } from 'firebase/app';
 import { 
   getFirestore, collection, addDoc, query, orderBy, limit, onSnapshot, 
   serverTimestamp, where, getDocs, deleteDoc, doc, updateDoc, getDoc 
@@ -16,7 +16,7 @@ import {
 
 /**
  * ============================================================================
- * Rakuten Patrol Pro - Item Name Recovery Edition (v19.4)
+ * Rakuten Patrol Pro - Ultimate UI & Control Edition (v19.6)
  * ============================================================================
  */
 
@@ -24,7 +24,7 @@ const APP_CONFIG = {
   FIXED_PASSWORD: 'admin', 
   API_TIMEOUT: 45000, 
   RETRY_LIMIT: 3,     
-  VERSION: '19.4.0-Recovery'
+  VERSION: '19.6.0-UltimateUI'
 };
 
 const parseFirebaseConfig = (input) => {
@@ -95,25 +95,28 @@ async function callGeminiDirectly(apiKey, prompt, isTest = false) {
 async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
   const keyIndex = (Math.floor(Math.random() * apiKeys.length) + retryCount) % apiKeys.length;
   const currentKey = apiKeys.length > 0 ? apiKeys[keyIndex] : '';
-
-  // 商品名が空でないことを確認
   const pName = itemData.productName || "（商品名不明）";
 
   const prompt = `
-    あなたは知的財産権法に精通した一流弁理士です。
-    以下の商品情報から、権利侵害リスクおよび禁止商材を厳格に判定してください。
+    あなたは知的財産権法（商標法、意匠法、著作権法、不正競争防止法）に精通した一流弁理士です。
+    以下の商品情報から、権利侵害リスクおよび禁止商材を厳格に監査してください。
 
     商品名: "${pName}"
     ${itemData.imageUrl ? `商品画像URL: ${itemData.imageUrl}` : ''}
 
     【判定基準 (絶対厳守)】
     1. **[重大]**: 食品、飲料、サプリ、医薬品、化粧品、美容液、コンタクトレンズ、アダルトグッズ。（安全性・公序良俗の観点から即NG）
-    2. **[高]**: 特定ブランド（ルイヴィトン、ナイキ、アニメキャラ等）のロゴ・デザインの無断使用、デッドコピー、「スーパーコピー」等の表記。
+    2. **[高]**: 特定ブランド（例: ルイヴィトン、ナイキ、アニメキャラ等）のロゴ・デザインの無断使用、デッドコピー、「スーパーコピー」等の表記。
     3. **[中]**: 「〇〇風」「〇〇タイプ」等の便乗商品、またはデザインが酷似しているグレーゾーン。
     4. **[低]**: 上記に該当しない一般的なノーブランド品、正規流通品。
 
-    【出力】JSONのみ。
-    {"risk_level": "重大"|"高"|"中"|"低", "is_critical": boolean, "reason": "具体的理由(20文字程度)"}
+    【出力要件】
+    - JSON形式のみで出力。Markdown装飾は不可。
+    - **reason**: 「どのブランド/商品の」「どの権利（商標権/意匠権/著作権等）」に抵触する可能性があるかを具体的に特定し、50〜80文字程度で記述すること。
+    - 食品等は「安全性の観点から販売禁止」と明記。
+
+    出力フォーマット:
+    {"risk_level": "重大"|"高"|"中"|"低", "is_critical": boolean, "reason": "具体的な法的根拠とリスク理由"}
   `;
 
   try {
@@ -138,6 +141,30 @@ async function checkApiKeyHealth(apiKey) {
         return { ok: true, status: 200, msg: 'OK' };
     } catch (e) {
         return { ok: false, status: 'ERR', msg: e.message };
+    }
+}
+
+// 楽天AppIDチェック
+async function checkRakutenAppId(appId) {
+    if(!appId) return { ok: false, msg: 'App IDが空です' };
+    try {
+        // テスト用に楽天24のURLを使用
+        const testUrl = "https://www.rakuten.co.jp/rakuten24/";
+        const u = new URL('/api/rakuten', window.location.origin);
+        u.searchParams.append('shopUrl', testUrl);
+        u.searchParams.append('appId', appId);
+        u.searchParams.append('page', 1);
+        
+        const r = await fetch(u);
+        const d = await r.json();
+        
+        if (r.ok && !d.error && !d.error_description) {
+            return { ok: true, msg: 'OK' };
+        } else {
+            return { ok: false, msg: d.error_description || d.error || '認証エラー' };
+        }
+    } catch(e) {
+        return { ok: false, msg: e.message };
     }
 }
 
@@ -235,14 +262,14 @@ const ResultTable = ({ items, title, onBack }) => {
             </div>
         )}
         <table className="w-full text-left border-collapse text-sm">
-          <thead className="bg-slate-50 sticky top-0 z-10 shadow-sm"><tr><th className="p-3 w-24 text-center">判定</th><th className="p-3 w-20 text-center">画像</th><th className="p-3 w-1/3">商品名 / リンク</th><th className="p-3">弁理士AIの所見</th></tr></thead>
+          <thead className="bg-slate-50 sticky top-0 z-10 shadow-sm"><tr><th className="p-3 w-24 text-center">判定</th><th className="p-3 w-20 text-center">画像</th><th className="p-3 w-1/3">商品名 / リンク</th><th className="p-3">弁理士AIの所見 (具体的根拠)</th></tr></thead>
           <tbody className="divide-y divide-slate-100">
               {displayItems.map((i,x)=>(
                   <tr key={x} className={`transition-colors ${i.risk_level==='重大'?'bg-purple-50':i.risk_level==='高'?'bg-red-50':i.risk_level==='中'?'bg-amber-50':'hover:bg-slate-50'}`}>
                       <td className="p-3 align-middle text-center"><RiskBadge item={i}/></td>
                       <td className="p-3 align-middle text-center">{i.imageUrl ? <img src={i.imageUrl} className="w-12 h-12 object-cover rounded border bg-white"/> : <ImageIcon className="w-8 h-8 text-slate-300 mx-auto"/>}</td>
                       <td className="p-3 align-middle"><div className="font-bold mb-1 line-clamp-2 text-xs">{i.productName}</div>{i.itemUrl&&<a href={i.itemUrl} target="_blank" className="text-blue-500 text-[10px] hover:underline inline-flex items-center gap-1"><ExternalLink className="w-3 h-3"/> 商品ページ</a>}</td>
-                      <td className="p-3 align-middle"><div className="text-xs p-2 rounded bg-white/50 border border-slate-200/50">{i.reason}</div></td>
+                      <td className="p-3 align-middle"><div className="text-xs p-2 rounded bg-white/50 border border-slate-200/50 leading-relaxed">{i.reason}</div></td>
                   </tr>
               ))}
           </tbody>
@@ -304,7 +331,7 @@ const SinglePatrolView = ({ config, db, addToast }) => {
         } catch(e) { console.error("DB Init Error", e); }
     }
     
-    const BATCH = Math.min(config.apiKeys.length * 10, 60); 
+    const BATCH = Math.min(config.apiKeys.length * 10, 50); 
 
     try {
       while(true) {
@@ -346,8 +373,6 @@ const SinglePatrolView = ({ config, db, addToast }) => {
         for(let i=0; i<d.products.length; i+=BATCH) {
           if(stopRef.current) break;
           const batchItems = d.products.slice(i, i+BATCH);
-          
-          // APIに渡す際のプロパティ名を確認 (productNameが必須)
           const results = await Promise.all(batchItems.map(b => analyzeItemRisk({productName:b.productName, imageUrl:b.imageUrl}, config.apiKeys)));
           const batchResults = batchItems.map((b,x) => ({...b, ...results[x]}));
           all = [...all, ...batchResults];
@@ -445,7 +470,7 @@ const SinglePatrolView = ({ config, db, addToast }) => {
           {status === 'idle' && <button onClick={checkShop} className="px-6 rounded-lg font-bold text-white bg-slate-600 hover:bg-slate-700 transition-colors flex items-center gap-2"><Search className="w-4 h-4"/> 調査</button>}
           {status === 'checking' && <button disabled className="px-6 rounded-lg font-bold text-white bg-slate-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin"/> ...</button>}
           {status === 'ready' && <button onClick={start} className="px-6 rounded-lg font-bold text-white bg-blue-600 hover:bg-blue-700 transition-colors flex items-center gap-2"><PlayCircle className="w-4 h-4"/> 開始</button>}
-          {status === 'running' && <button onClick={()=>stopRef.current=true} className="px-6 rounded-lg font-bold text-white bg-amber-500 hover:bg-amber-600 transition-colors flex items-center gap-2"><PauseCircle className="w-4 h-4"/> 停止</button>}
+          {status === 'running' && <button onClick={()=>{setStatus('paused'); stopRef.current=true;}} className="px-6 rounded-lg font-bold text-white bg-amber-500 hover:bg-amber-600 transition-colors flex items-center gap-2"><PauseCircle className="w-4 h-4"/> 停止</button>}
           {status === 'paused' && (
               <>
                 <button onClick={start} className="px-6 rounded-lg font-bold text-white bg-green-600 hover:bg-green-700 transition-colors flex items-center gap-2"><PlayCircle className="w-4 h-4"/> 再開</button>
@@ -455,7 +480,6 @@ const SinglePatrolView = ({ config, db, addToast }) => {
           {status === 'completed' && (
               <>
                 <button onClick={finish} className="px-6 rounded-lg font-bold text-white bg-slate-600 hover:bg-slate-700 transition-colors">リセット</button>
-                {/* エラー再試行ボタンの表示条件: 完了かつエラー商品がある場合 */}
                 {errorCount > 0 && (
                     <button onClick={retryErrors} className="px-6 rounded-lg font-bold text-white bg-amber-500 hover:bg-amber-600 transition-colors flex items-center gap-2">
                         <RotateCcw className="w-4 h-4"/> エラー再試行 ({errorCount})
@@ -505,9 +529,11 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
   const save = async (sid, shops, sum, newD=[]) => {
     if(!db || !sid) return;
     try {
-      const { arrayUnion } = await import('firebase/firestore');
       const up = { shopList:shops, summary:sum, updatedAt:serverTimestamp() };
-      if(newD.length) { up.details = arrayUnion(...newD); }
+      if(newD.length) { 
+          const { arrayUnion } = await import('firebase/firestore');
+          up.details = arrayUnion(...newD); 
+      }
       await updateDoc(doc(db,'check_sessions',sid), up);
     } catch(e){ console.error(e); }
   };
@@ -661,7 +687,7 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
           <div className="bg-slate-800/80 backdrop-blur p-4 rounded-xl border border-slate-700 relative z-10">
             <div className="flex justify-between items-center mb-2"><span className="font-bold flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin text-blue-400"/> 処理中: {stat.shops[stat.done]?.url || "準備中..."}</span>
                 <div className="flex gap-2">
-                    <button onClick={()=>stopRef.current=true} className="text-xs bg-amber-500/20 hover:bg-amber-500/40 text-amber-400 px-3 py-1 rounded border border-amber-500/30 transition-colors">停止</button>
+                    <button onClick={()=>{setProc(false); stopRef.current=true;}} className="text-xs bg-amber-500/20 hover:bg-amber-500/40 text-amber-400 px-3 py-1 rounded border border-amber-500/30 transition-colors">停止</button>
                 </div>
             </div>
             <div className="h-24 overflow-y-auto font-mono text-[10px] text-green-400 bg-black/50 p-3 rounded-lg border border-white/5 custom-scrollbar">{logs.map((l,i)=><div key={i}>{l}</div>)}</div>
@@ -698,11 +724,13 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
   );
 };
 
-const SettingsView = ({ config, setConfig, addToast }) => {
+const SettingsView = ({ config, setConfig, addToast, connectToFirebase }) => {
   const [k, setK] = useState(config.apiKeys.join('\n'));
   const [checking, setChecking] = useState(false);
   const [keyStatus, setKeyStatus] = useState({});
   const [showKey, setShowKey] = useState(false);
+  const [dbLoading, setDbLoading] = useState(false);
+  const [rakutenLoading, setRakutenLoading] = useState(false);
   const textareaRef = useRef(null);
 
   useEffect(() => {
@@ -719,6 +747,20 @@ const SettingsView = ({ config, setConfig, addToast }) => {
     localStorage.setItem('rakuten_app_id', config.rakutenAppId);
     localStorage.setItem('firebase_config', config.firebaseJson);
     addToast("設定を保存しました", "success");
+  };
+
+  const handleDbToggle = async () => {
+      setDbLoading(true);
+      await connectToFirebase(config.firebaseJson);
+      setDbLoading(false);
+  };
+
+  const handleRakutenCheck = async () => {
+      setRakutenLoading(true);
+      const res = await checkRakutenAppId(config.rakutenAppId);
+      setRakutenLoading(false);
+      if(res.ok) addToast("楽天AppIDは有効です", "success");
+      else addToast(`エラー: ${res.msg}`, "error");
   };
 
   const checkKeys = async () => {
@@ -750,8 +792,22 @@ const SettingsView = ({ config, setConfig, addToast }) => {
             </div>
             <p className="text-[10px] text-slate-400 mt-1">※キーが多いほど並列処理数が上がり、高速化します。</p>
         </div>
-        <div><label className="text-xs font-bold text-slate-500 mb-1 block">Rakuten App ID</label><input value={config.rakutenAppId} onChange={e=>setConfig({...config, rakutenAppId:e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-slate-200 outline-none"/></div>
-        <div><label className="text-xs font-bold text-slate-500 mb-1 block">Firebase Config JSON</label><textarea value={config.firebaseJson} onChange={e=>setConfig({...config, firebaseJson:e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg h-24 text-xs font-mono focus:ring-2 focus:ring-slate-200 outline-none" placeholder='{"apiKey": "...", ...}'/></div>
+        <div>
+            <div className="flex justify-between items-end mb-1">
+                <label className="text-xs font-bold text-slate-500">Rakuten App ID</label>
+                <button onClick={handleRakutenCheck} disabled={rakutenLoading} className="text-xs bg-slate-100 hover:bg-slate-200 px-3 py-1 rounded text-slate-600 flex items-center gap-1 transition-colors">{rakutenLoading ? <Loader2 className="w-3 h-3 animate-spin"/> : <Check className="w-3 h-3"/>} 有効性チェック</button>
+            </div>
+            <input value={config.rakutenAppId} onChange={e=>setConfig({...config, rakutenAppId:e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-slate-200 outline-none"/>
+        </div>
+        <div>
+            <div className="flex justify-between items-end mb-1">
+                <label className="text-xs font-bold text-slate-500">Firebase設定 (JSON)</label>
+                <button onClick={handleDbToggle} disabled={dbLoading} className={`text-xs px-3 py-1 rounded flex items-center gap-1 transition-colors ${dbLoading ? 'bg-slate-200' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'}`}>
+                    {dbLoading ? <Loader2 className="w-3 h-3 animate-spin"/> : <Database className="w-3 h-3"/>} データベース接続
+                </button>
+            </div>
+            <textarea value={config.firebaseJson} onChange={e=>setConfig({...config, firebaseJson:e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg h-24 text-xs font-mono focus:ring-2 focus:ring-slate-200 outline-none" placeholder='{"apiKey": "...", ...}'/>
+        </div>
         <button onClick={save} className="w-full py-3 bg-slate-800 text-white font-bold rounded-lg hover:bg-slate-700 transition-colors shadow-lg">設定を保存</button>
       </div>
     </div>
@@ -774,23 +830,48 @@ export default function App() {
 
   const toast = (m,t='info') => { const id=Date.now(); setToasts(p=>[...p,{id,message:m,type:t}]); setTimeout(()=>setToasts(p=>p.filter(x=>x.id!==id)),4000); };
   
+  const connectToFirebase = async (json) => {
+      if(!json) return toast("設定JSONが空です", "error");
+      try {
+          const c = parseFirebaseConfig(json);
+          if(!c) throw new Error("JSON形式エラー");
+          
+          // 既存アプリがあれば削除（再接続のため）
+          if(getApps().length > 0) {
+              const currentApp = getApp();
+              await deleteApp(currentApp); // 完全なリセットは難しいが試行
+          }
+          
+          const app = initializeApp(c);
+          const firestore = getFirestore(app);
+          setDb(firestore);
+          setDbSt('OK');
+          toast("データベースに接続しました", "success");
+          
+          onSnapshot(query(collection(firestore,'check_sessions'), orderBy('createdAt','desc'), limit(20)), s => { 
+              setHist(s.docs.map(d=>({id:d.id,...d.data()}))); 
+          }, err => {
+              console.error(err);
+              setDbSt('ERR');
+              toast("DB接続エラー: 権限を確認してください", "error");
+          });
+      } catch(e) {
+          console.error(e);
+          setDbSt('ERR');
+          toast(`接続失敗: ${e.message}`, "error");
+      }
+  };
+
   useEffect(() => {
     const k = JSON.parse(localStorage.getItem('gemini_api_keys')||'[]');
     const r = localStorage.getItem('rakuten_app_id')||'';
     const f = localStorage.getItem('firebase_config')||'';
     setConf({apiKeys:k, rakutenAppId:r, firebaseJson:f});
     if(localStorage.getItem('app_auth')==='true') setLogin(true);
-    if(f) {
-      try {
-        const c = parseFirebaseConfig(f);
-        if(c) { 
-            const app = getApps().length?getApp():initializeApp(c); 
-            const firestore = getFirestore(app);
-            setDb(firestore); setDbSt('OK'); 
-            onSnapshot(query(collection(firestore,'check_sessions'), orderBy('createdAt','desc'), limit(20)), s => { setHist(s.docs.map(d=>({id:d.id,...d.data()}))); });
-        }
-      } catch(e){ setDbSt('ERR'); }
-    } else { setDbSt('No Config'); }
+    
+    // 初回自動接続トライ
+    if(f) connectToFirebase(f);
+    else setDbSt('No Config');
   }, []);
 
   if(!login) return <LoginView onLogin={async(p)=>{ if(p===APP_CONFIG.FIXED_PASSWORD){setLogin(true); localStorage.setItem('app_auth','true'); toast('ログイン成功', 'success');}else toast('パスワードが間違っています', 'error'); }}/>;
@@ -851,7 +932,7 @@ export default function App() {
             </div>
           )}
           {tab==='inspect' && ins && <div className="max-w-5xl mx-auto h-full"><ResultTable items={ins.details||[]} title={ins.target} onBack={()=>setTab('history')} /></div>}
-          {tab==='settings' && <SettingsView config={conf} setConfig={setConf} addToast={toast} />}
+          {tab==='settings' && <SettingsView config={conf} setConfig={setConf} addToast={toast} connectToFirebase={connectToFirebase} />}
         </main>
       </div>
     </div>
