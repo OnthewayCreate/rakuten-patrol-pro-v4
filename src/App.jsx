@@ -16,7 +16,7 @@ import {
 
 /**
  * ============================================================================
- * Rakuten Patrol Pro - Crash Fix & Robust Edition (v19.7)
+ * Rakuten Patrol Pro - Final Stability Edition (v19.8)
  * ============================================================================
  */
 
@@ -24,31 +24,34 @@ const APP_CONFIG = {
   FIXED_PASSWORD: 'admin', 
   API_TIMEOUT: 45000, 
   RETRY_LIMIT: 3,     
-  VERSION: '19.7.0-CrashFix'
+  VERSION: '19.8.0-FinalStable'
 };
 
 const parseFirebaseConfig = (input) => {
   if (!input) return null;
   try { return JSON.parse(input); } catch (e) {
     try {
-      // JSオブジェクト形式でも許容する柔軟なパース
       let jsonStr = input.replace(/^(const|var|let)\s+\w+\s*=\s*/, '').replace(/;\s*$/, '').replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":').replace(/'/g, '"');
       return JSON.parse(jsonStr);
     } catch (e2) { return null; }
   }
 };
 
-// 安全な日付フォーマット関数 (ホワイトアウト防止の要)
+// 安全な日付変換ユーティリティ (絶対にクラッシュさせない)
+const safeDate = (timestamp) => {
+    if (!timestamp) return null;
+    try {
+        if (timestamp.toDate && typeof timestamp.toDate === 'function') return timestamp.toDate();
+        if (timestamp.seconds) return new Date(timestamp.seconds * 1000);
+        if (timestamp instanceof Date) return timestamp;
+        if (typeof timestamp === 'string') return new Date(timestamp);
+    } catch (e) { return null; }
+    return null;
+};
+
 const formatDate = (timestamp) => {
-  if (!timestamp) return '日時不明 (処理中)';
-  try {
-    if (typeof timestamp.toDate === 'function') return timestamp.toDate().toLocaleString();
-    if (timestamp.seconds) return new Date(timestamp.seconds * 1000).toLocaleString();
-    if (timestamp instanceof Date) return timestamp.toLocaleString();
-  } catch (e) {
-    return '日時形式エラー';
-  }
-  return '日時不明';
+    const d = safeDate(timestamp);
+    return d ? d.toLocaleString() : '日時不明';
 };
 
 // --- プログレスバー ---
@@ -177,6 +180,15 @@ async function checkRakutenAppId(appId) {
         return { ok: false, msg: e.message };
     }
 }
+
+const formatTime = (seconds) => {
+  if (!seconds || seconds < 0 || !isFinite(seconds)) return "--:--";
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (h > 0) return `${h}時間${m}分`;
+  return `${m}分${s}秒`;
+};
 
 // --- Components ---
 const ToastContainer = ({ toasts, removeToast }) => (
@@ -321,7 +333,6 @@ const SinglePatrolView = ({ config, db, addToast }) => {
     let all = [...res];
     let currentSessionId = sessionId;
 
-    // 初回のみDBドキュメント作成
     if (db && !currentSessionId) {
         try {
             const docRef = await addDoc(collection(db, 'check_sessions'), { 
@@ -843,19 +854,29 @@ export default function App() {
           
           const app = initializeApp(c);
           const firestore = getFirestore(app);
+          // Firestoreの接続確認を兼ねた読み込み
+          // snapshotOptions: { serverTimestamps: 'estimate' } は読み取り時に指定するものだが、
+          // ここではonSnapshotのオプションとして設定
           setDb(firestore);
           setDbSt('OK');
           toast("データベースに接続しました", "success");
           
-          // 修正: エラー時にhistをクリアしてホワイトアウト防止
-          onSnapshot(query(collection(firestore,'check_sessions'), orderBy('createdAt','desc'), limit(20)), s => { 
-              setHist(s.docs.map(d=>({id:d.id,...d.data()}))); 
-          }, err => {
-              console.error(err);
-              setDbSt('ERR');
-              setHist([]); // 安全策
-              toast("DB接続エラー: 権限を確認してください", "error");
-          });
+          onSnapshot(
+              query(collection(firestore,'check_sessions'), orderBy('createdAt','desc'), limit(20)), 
+              { includeMetadataChanges: true }, // ローカルの変更（見積もり時刻など）も即座に反映させる
+              s => { 
+                  setHist(s.docs.map(d => ({
+                      id: d.id,
+                      ...d.data({ serverTimestamps: 'estimate' }) // ここでestimateを指定してnullを防ぐ
+                  }))); 
+              }, 
+              err => {
+                  console.error(err);
+                  setDbSt('ERR');
+                  setHist([]);
+                  toast("DB接続エラー: 権限を確認してください", "error");
+              }
+          );
       } catch(e) {
           console.error(e);
           setDbSt('ERR');
@@ -878,11 +899,8 @@ export default function App() {
 
   const today = new Date().toLocaleDateString();
   const todayScans = hist.filter(h => {
-      if(!h.createdAt) return false;
-      try {
-        const d = h.createdAt.toDate ? h.createdAt.toDate() : new Date(h.createdAt.seconds * 1000);
-        return d.toLocaleDateString() === today;
-      } catch(e) { return false; }
+      const d = safeDate(h.createdAt);
+      return d && d.toLocaleDateString() === today;
   });
 
   return (
