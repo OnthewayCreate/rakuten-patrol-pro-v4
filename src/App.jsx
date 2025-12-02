@@ -6,18 +6,12 @@ import {
   ArrowLeft, Store, Info, PlayCircle, Terminal, Activity, Cloud, ImageIcon, 
   Bot, List, Power, Moon, Clock, RefreshCw, AlertTriangle, Bug, Timer, Filter,
   Check, Wifi, WifiOff, PauseCircle, Download, Gavel, Scale, Eye, EyeOff, FastForward,
-  Layers, RotateCcw, StopCircle, Database, ToggleLeft, ToggleRight, AlertOctagon
+  Layers, RotateCcw, StopCircle, Database
 } from 'lucide-react';
-import { initializeApp, getApps, getApp, deleteApp } from 'firebase/app';
-import { getAuth, signInAnonymously } from 'firebase/auth';
-import { 
-  getFirestore, collection, addDoc, query, orderBy, limit, onSnapshot, 
-  serverTimestamp, where, getDocs, deleteDoc, doc, updateDoc, getDoc 
-} from 'firebase/firestore';
 
 /**
  * ============================================================================
- * Rakuten Patrol Pro - Firebase Fix Edition (v20.1)
+ * Rakuten Patrol Pro - Local History Edition (v21.0)
  * ============================================================================
  */
 
@@ -25,63 +19,16 @@ const APP_CONFIG = {
   FIXED_PASSWORD: 'admin', 
   API_TIMEOUT: 45000, 
   RETRY_LIMIT: 3,     
-  VERSION: '20.1.0-FirebaseFix'
+  VERSION: '21.0.0-Local'
 };
 
-// --- エラー境界コンポーネント ---
-class ErrorBoundary extends React.Component {
-  constructor(props) {
-    super(props);
-    this.state = { hasError: false, error: null };
-  }
-  static getDerivedStateFromError(error) { return { hasError: true, error }; }
-  componentDidCatch(error, errorInfo) { console.error("Uncaught error:", error, errorInfo); }
-  handleReset = () => { localStorage.removeItem('firebase_config'); window.location.reload(); };
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
-          <div className="bg-white p-8 rounded-2xl shadow-2xl max-w-md w-full text-center border border-red-100">
-            <div className="bg-red-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6"><AlertOctagon className="w-8 h-8 text-red-600" /></div>
-            <h2 className="text-2xl font-bold text-slate-800 mb-2">システムエラー</h2>
-            <p className="text-slate-500 mb-6 text-sm">予期せぬエラーが発生しました。</p>
-            <div className="bg-slate-100 p-4 rounded-lg text-left text-[10px] font-mono mb-6 overflow-auto max-h-32 text-slate-600 border border-slate-200">{this.state.error && this.state.error.toString()}</div>
-            <button onClick={this.handleReset} className="w-full bg-red-600 hover:bg-red-700 text-white py-3 rounded-lg font-bold transition-all shadow-lg flex items-center justify-center gap-2"><RefreshCw className="w-4 h-4"/> 復旧する</button>
-          </div>
-        </div>
-      );
-    }
-    return this.props.children; 
-  }
-}
-
-const parseFirebaseConfig = (input) => {
-  if (!input) return null;
-  try { return JSON.parse(input); } catch (e) {
-    try {
-      let jsonStr = input.replace(/^(const|var|let)\s+\w+\s*=\s*/, '').replace(/;\s*$/, '').replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":').replace(/'/g, '"');
-      return JSON.parse(jsonStr);
-    } catch (e2) { return null; }
-  }
+const STATUS_MAP = {
+    'processing': '処理中',
+    'paused': '一時停止',
+    'completed': '完了',
+    'error': 'エラー',
+    'aborted': '中断'
 };
-
-const safeDate = (timestamp) => {
-    if (!timestamp) return null;
-    try {
-        if (timestamp.toDate && typeof timestamp.toDate === 'function') return timestamp.toDate();
-        if (timestamp.seconds) return new Date(timestamp.seconds * 1000);
-        if (timestamp instanceof Date) return timestamp;
-        if (typeof timestamp === 'string') return new Date(timestamp);
-    } catch (e) { return null; }
-    return null;
-};
-
-const formatDate = (timestamp) => {
-    const d = safeDate(timestamp);
-    return d ? d.toLocaleString() : '日時不明';
-};
-
-const STATUS_MAP = { 'processing': '処理中', 'paused': '一時停止', 'completed': '完了', 'error': 'エラー', 'aborted': '中断' };
 
 // --- プログレスバー ---
 const ProgressBar = ({ current, total, label, color = "bg-blue-600", subLabel }) => {
@@ -93,7 +40,10 @@ const ProgressBar = ({ current, total, label, color = "bg-blue-600", subLabel })
         <span>{subLabel || `${percent}% (${current.toLocaleString()}/${total.toLocaleString()})`}</span>
       </div>
       <div className="w-full bg-slate-200 rounded-full h-2.5 overflow-hidden">
-        <div className={`h-2.5 rounded-full transition-all duration-300 ${color}`} style={{ width: `${percent}%` }}></div>
+        <div 
+          className={`h-2.5 rounded-full transition-all duration-300 ${color}`} 
+          style={{ width: `${percent}%` }}
+        ></div>
       </div>
     </div>
   );
@@ -112,7 +62,9 @@ async function callGeminiDirectly(apiKey, prompt, isTest = false) {
         const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+            body: JSON.stringify({
+                contents: [{ parts: [{ text: prompt }] }]
+            }),
             signal: controller.signal
         });
         clearTimeout(timeoutId);
@@ -121,11 +73,16 @@ async function callGeminiDirectly(apiKey, prompt, isTest = false) {
             const err = await response.json().catch(() => ({}));
             throw new Error(err.error?.message || `HTTP ${response.status}`);
         }
+
         const data = await response.json();
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
         if (!text) throw new Error('No response from AI');
+        
         return text;
-    } catch (error) { clearTimeout(timeoutId); throw error; }
+    } catch (error) {
+        clearTimeout(timeoutId);
+        throw error;
+    }
 }
 
 async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
@@ -148,10 +105,11 @@ async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
 
     【出力要件】
     - JSON形式のみで出力。Markdown装飾は不可。
-    - **reason**: 「どのブランド/商品の」「どの権利」に抵触するか具体的に特定し、50〜80文字程度で記述。食品等は「安全性の観点から販売禁止」と明記。
+    - **reason**: 「どのブランド/商品の」「どの権利（商標権/意匠権/著作権等）」に抵触する可能性があるかを具体的に特定し、50〜80文字程度で記述すること。
+    - 食品等は「安全性の観点から販売禁止」と明記。
 
     出力フォーマット:
-    {"risk_level": "重大"|"高"|"中"|"低", "is_critical": boolean, "reason": "具体的理由"}
+    {"risk_level": "重大"|"高"|"中"|"低", "is_critical": boolean, "reason": "具体的な法的根拠とリスク理由"}
   `;
 
   try {
@@ -159,6 +117,7 @@ async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
     const jsonMatch = aiResponseText.match(/\{[\s\S]*\}/);
     const aiResult = jsonMatch ? JSON.parse(jsonMatch[0]) : { risk_level: "不明", is_critical: false, reason: "解析不能" };
     return aiResult;
+
   } catch (error) {
     if ((error.message.includes('429') || error.message.includes('503')) && retryCount < APP_CONFIG.RETRY_LIMIT) {
         const waitTime = Math.pow(1.5, retryCount) * 300; 
@@ -188,9 +147,14 @@ async function checkRakutenAppId(appId) {
         u.searchParams.append('page', 1);
         const r = await fetch(u);
         const d = await r.json();
-        if (r.ok && !d.error && !d.error_description) return { ok: true, msg: 'OK' };
-        return { ok: false, msg: d.error_description || d.error || '認証エラー' };
-    } catch(e) { return { ok: false, msg: e.message }; }
+        if (r.ok && !d.error && !d.error_description) {
+            return { ok: true, msg: 'OK' };
+        } else {
+            return { ok: false, msg: d.error_description || d.error || '認証エラー' };
+        }
+    } catch(e) {
+        return { ok: false, msg: e.message };
+    }
 }
 
 const formatTime = (seconds) => {
@@ -257,6 +221,7 @@ const LoginView = ({ onLogin }) => {
 
 const ResultTable = ({ items, title, onBack }) => {
   const [showAll, setShowAll] = useState(false);
+  
   const displayItems = useMemo(() => {
     if (showAll) return items.slice(0, 500); 
     return items.filter(i => i.risk_level !== '低' && i.risk_level !== 'Low');
@@ -303,14 +268,13 @@ const ResultTable = ({ items, title, onBack }) => {
   );
 };
 
-const SinglePatrolView = ({ config, db, addToast }) => {
+const SinglePatrolView = ({ config, addToHistory, addToast }) => {
   const [url, setUrl] = useState('');
   const [status, setStatus] = useState('idle');
   const [meta, setMeta] = useState({ count: 0 });
   const [progress, setProgress] = useState({ processed: 0, remainingTime: 0, startTime: 0, currentPage: 1 });
   const [res, setRes] = useState([]);
   const [msg, setMsg] = useState('');
-  const [sessionId, setSessionId] = useState(null); 
   const stopRef = useRef(false);
 
   const errorCount = useMemo(() => res.filter(i => i.risk_level === 'エラー').length, [res]);
@@ -342,18 +306,6 @@ const SinglePatrolView = ({ config, db, addToast }) => {
     let p = progress.currentPage;
     let processedCount = progress.processed;
     let all = [...res];
-    let currentSessionId = sessionId;
-
-    if (db && !currentSessionId) {
-        try {
-            const docRef = await addDoc(collection(db, 'check_sessions'), { 
-                type: 'url', target: url, createdAt: serverTimestamp(), status: 'processing', 
-                summary: { total: 0, high: 0, critical: 0 }, details: [] 
-            });
-            currentSessionId = docRef.id;
-            setSessionId(currentSessionId);
-        } catch(e) { console.error("DB Init Error", e); }
-    }
     
     const BATCH = Math.min(config.apiKeys.length * 10, 60); 
 
@@ -364,7 +316,8 @@ const SinglePatrolView = ({ config, db, addToast }) => {
             setMsg("一時停止中"); 
             addToast("一時停止しました", "info"); 
             setProgress(prev=>({...prev, currentPage:p, processed:processedCount})); 
-            if(db && currentSessionId) await saveToDb(currentSessionId, all, 'paused'); 
+            // 停止時も履歴保存
+            addToHistory({ type: 'url', target: url, status: 'paused', details: all, createdAt: new Date() });
             break; 
         }
 
@@ -389,7 +342,7 @@ const SinglePatrolView = ({ config, db, addToast }) => {
             if(!stopRef.current) { 
                 setStatus('completed'); 
                 addToast("完了", "success"); 
-                if(db && currentSessionId) await saveToDb(currentSessionId, all, 'completed'); 
+                addToHistory({ type: 'url', target: url, status: 'completed', details: all, createdAt: new Date() });
             }
             break;
         }
@@ -413,7 +366,7 @@ const SinglePatrolView = ({ config, db, addToast }) => {
              if(!stopRef.current) { 
                  setStatus('completed'); 
                  addToast("完了", "success"); 
-                 if(db && currentSessionId) await saveToDb(currentSessionId, all, 'completed'); 
+                 addToHistory({ type: 'url', target: url, status: 'completed', details: all, createdAt: new Date() });
             }
             break;
         }
@@ -424,7 +377,7 @@ const SinglePatrolView = ({ config, db, addToast }) => {
         console.error(e); 
         addToast("エラー発生", "error"); 
         setStatus('paused'); 
-        if(db && currentSessionId) await saveToDb(currentSessionId, all, 'error'); 
+        addToHistory({ type: 'url', target: url, status: 'error', details: all, createdAt: new Date() });
     }
     if (status !== 'paused') setMsg("");
   };
@@ -454,34 +407,17 @@ const SinglePatrolView = ({ config, db, addToast }) => {
     setStatus('completed');
     addToast("再チェック完了", "success");
     setMsg("");
-    if(db && sessionId) await saveToDb(sessionId, updatedRes, 'completed');
+    addToHistory({ type: 'url', target: url, status: 'completed', details: updatedRes, createdAt: new Date() });
   };
 
   const finish = async () => {
       stopRef.current = true;
-      if (db && sessionId) await saveToDb(sessionId, res, 'completed'); 
+      addToHistory({ type: 'url', target: url, status: 'completed', details: res, createdAt: new Date() });
       setStatus('idle');
       setUrl('');
       setRes([]);
-      setSessionId(null);
       setProgress({ processed: 0, remainingTime: 0, startTime: 0, currentPage: 1 });
       addToast("終了しました", "info");
-  };
-
-  const saveToDb = async (sid, data, st) => {
-      const riskyItems = data.filter(i => i.risk_level !== '低' && i.risk_level !== 'Low');
-      try {
-        await updateDoc(doc(db, 'check_sessions', sid), { 
-            status: st, 
-            summary: { 
-                total: data.length, 
-                high: data.filter(i=>i.risk_level==='高'||i.risk_level==='重大').length, 
-                critical: data.filter(i=>i.is_critical).length 
-            }, 
-            details: riskyItems,
-            updatedAt: serverTimestamp()
-        });
-      } catch(e) { console.error('DB Save Error', e); }
   };
 
   return (
@@ -532,13 +468,12 @@ const SinglePatrolView = ({ config, db, addToast }) => {
   );
 };
 
-const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
+const BulkPatrolView = ({ config, addToHistory, addToast, stopRef, resume }) => {
   const [urls, setUrls] = useState('');
   const [proc, setProc] = useState(false);
   const [logs, setLogs] = useState([]);
   const [stat, setStat] = useState({ total:0, done:0, items:0, currentShopItems:0, currentShopTotal:0, shops:[], risks: 0 });
   const [resultsMap, setResultsMap] = useState({});
-  const [sessionId, setSessionId] = useState(null);
 
   useEffect(() => {
     if(resume) {
@@ -550,16 +485,6 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
 
   const addLog = m => setLogs(p => [`[${new Date().toLocaleTimeString()}] ${m}`, ...p].slice(0,50));
   
-  const save = async (sid, shops, sum, newD=[]) => {
-    if(!db || !sid) return;
-    try {
-      const { arrayUnion } = await import('firebase/firestore');
-      const up = { shopList:shops, summary:sum, updatedAt:serverTimestamp() };
-      if(newD.length) { up.details = arrayUnion(...newD); }
-      await updateDoc(doc(db,'check_sessions',sid), up);
-    } catch(e){ console.error(e); }
-  };
-
   const dlAll = () => {
       const allItems = Object.values(resultsMap).flat();
       if(allItems.length === 0) return addToast("データがありません", "error");
@@ -571,34 +496,24 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
 
   const finish = async () => {
       stopRef.current = true;
-      if (db && sessionId) await updateDoc(doc(db, 'check_sessions', sessionId), { status: 'completed', updatedAt: serverTimestamp() });
       setProc(false);
       setUrls('');
       setLogs([]);
-      setSessionId(null);
       setStat({ total:0, done:0, items:0, currentShopItems:0, currentShopTotal:0, shops:[], risks: 0 });
       addToast("一括パトロール終了", "info");
   };
 
   const run = async () => {
-    let sList = stat.shops, sid = stat.sid || sessionId, totalI = stat.items;
+    let sList = stat.shops, totalI = stat.items;
     if(!config.apiKeys.length || !config.rakutenAppId) return addToast("設定不足", "error");
 
     if(!resume && !proc) {
       const ul = urls.split('\n').map(u=>u.trim()).filter(u=>u.startsWith('http'));
       if(!ul.length) return addToast("URLなし", "error");
       sList = ul.map(u=>({url:u, status:'waiting', itemCount:0}));
-      
-      if(db) {
-          try {
-             const d = await addDoc(collection(db,'check_sessions'), { type:'bulk_url', target:`一括(${ul.length})`, createdAt:serverTimestamp(), status:'processing', shopList:sList, summary:{total:0, high:0, critical:0}, details:[] });
-             sid = d.id;
-             setSessionId(sid);
-          } catch(e){}
-      }
     }
     setProc(true); stopRef.current = false;
-    setStat(p=>({...p, total:sList.length, sid}));
+    setStat(p=>({...p, total:sList.length}));
     addLog("🚀 一括パトロール開始");
 
     const BATCH = Math.min(config.apiKeys.length * 8, 40);
@@ -658,19 +573,14 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
             processedInShop += b.length;
             setStat(prev => ({...prev, currentShopItems: processedInShop, items: prev.items + b.length}));
           }
-          
-          if(p%5===0) { 
-              sList[i].itemCount=shopI.length; 
-              await save(sid, sList, {total:totalI+shopI.length, high:0, critical:0}); 
-          }
           p++; if(p>300) { addLog("⚠️ ページ上限"); break; }
         }
         
         if(!stopRef.current) {
           sList[i].status='completed'; sList[i].itemCount=shopI.length; 
           setResultsMap(prev => ({...prev, [sList[i].url]: shopI}));
-          const highRisks = shopI.filter(x=>x.risk_level==='高'||x.risk_level==='重大');
-          await save(sid, sList, {total:stat.items, high:highRisks.length, critical:0}, highRisks);
+          // 結果保存（メモリ＆ローカル履歴）
+          addToHistory({ type: 'bulk_url', target: sList[i].url, status: 'completed', details: shopI, createdAt: new Date() });
           addLog(`✅ 完了: ${shopI.length}件`);
         }
       } catch(e){ sList[i].status='error'; addLog("❌ ショップエラー"); }
@@ -678,9 +588,13 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
       setStat(prev => ({...prev, currentShopItems: totalShopItems, done: i+1}));
       await new Promise(r=>setTimeout(r, 500));
     }
-    setProc(false);
-    if(db && sid) await updateDoc(doc(db,'check_sessions',sid), {status:'completed', updatedAt:serverTimestamp()});
-    addToast(stopRef.current?"一時停止":"全ショップ完了", "success");
+    
+    if(stopRef.current) {
+        addLog("一時停止しました");
+    } else {
+        setProc(false);
+        addToast("全ショップ完了", "success");
+    }
   };
 
   return (
@@ -739,12 +653,11 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
   );
 };
 
-const SettingsView = ({ config, setConfig, addToast, connectToFirebase }) => {
+const SettingsView = ({ config, setConfig, addToast }) => {
   const [k, setK] = useState(config.apiKeys.join('\n'));
   const [checking, setChecking] = useState(false);
   const [keyStatus, setKeyStatus] = useState({});
   const [showKey, setShowKey] = useState(false);
-  const [dbLoading, setDbLoading] = useState(false);
   const [rakutenLoading, setRakutenLoading] = useState(false);
   const textareaRef = useRef(null);
 
@@ -757,17 +670,10 @@ const SettingsView = ({ config, setConfig, addToast, connectToFirebase }) => {
 
   const save = () => {
     const keys = k.split('\n').map(x=>x.trim()).filter(x=>x);
-    setConfig({...config, apiKeys:keys, rakutenAppId:config.rakutenAppId, firebaseJson:config.firebaseJson});
+    setConfig({...config, apiKeys:keys, rakutenAppId:config.rakutenAppId});
     localStorage.setItem('gemini_api_keys', JSON.stringify(keys));
     localStorage.setItem('rakuten_app_id', config.rakutenAppId);
-    localStorage.setItem('firebase_config', config.firebaseJson);
     addToast("設定を保存しました", "success");
-  };
-
-  const handleDbToggle = async () => {
-      setDbLoading(true);
-      await connectToFirebase(config.firebaseJson);
-      setDbLoading(false);
   };
 
   const handleRakutenCheck = async () => {
@@ -805,7 +711,6 @@ const SettingsView = ({ config, setConfig, addToast, connectToFirebase }) => {
                 {!showKey && (<div className="absolute inset-0 p-3 pointer-events-none text-xs font-mono leading-loose text-slate-800 bg-transparent select-none">{k ? k.split('\n').map((l, i) => <div key={i}>{'•'.repeat(Math.min(l.length, 40))}</div>) : ''}</div>)}
                 <div className="absolute top-3 right-3 flex flex-col gap-2 pointer-events-none">{k.split('\n').map((_, i) => keyStatus[i] && (<div key={i} className={`text-[10px] px-2 py-0.5 rounded font-bold flex items-center gap-1 shadow-sm ${keyStatus[i].ok ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{keyStatus[i].ok ? <Wifi className="w-3 h-3"/> : <WifiOff className="w-3 h-3"/>}{keyStatus[i].ok ? 'OK' : `ERR(${keyStatus[i].status})`}</div>))}</div>
             </div>
-            <p className="text-[10px] text-slate-400 mt-1">※キーが多いほど並列処理数が上がり、高速化します。</p>
         </div>
         <div>
             <div className="flex justify-between items-end mb-1">
@@ -813,20 +718,6 @@ const SettingsView = ({ config, setConfig, addToast, connectToFirebase }) => {
                 <button onClick={handleRakutenCheck} disabled={rakutenLoading} className="text-xs bg-slate-100 hover:bg-slate-200 px-3 py-1 rounded text-slate-600 flex items-center gap-1 transition-colors">{rakutenLoading ? <Loader2 className="w-3 h-3 animate-spin"/> : <Check className="w-3 h-3"/>} 有効性チェック</button>
             </div>
             <input value={config.rakutenAppId} onChange={e=>setConfig({...config, rakutenAppId:e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-slate-200 outline-none"/>
-        </div>
-        <div>
-            <div className="flex justify-between items-end mb-1">
-                <label className="text-xs font-bold text-slate-500">Firebase設定 (JSON)</label>
-                <div className="flex items-center gap-2">
-                    {config.firebaseJson && (
-                        <button onClick={()=>setConfig({...config, firebaseJson: ''})} className="text-xs bg-red-50 hover:bg-red-100 text-red-600 px-2 py-1 rounded flex items-center gap-1 transition-colors"><Trash2 className="w-3 h-3"/> クリア</button>
-                    )}
-                    <button onClick={handleDbToggle} disabled={dbLoading} className={`text-xs px-3 py-1 rounded flex items-center gap-1 transition-colors ${dbLoading ? 'bg-slate-200' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'}`}>
-                        {dbLoading ? <Loader2 className="w-3 h-3 animate-spin"/> : <Database className="w-3 h-3"/>} データベース接続
-                    </button>
-                </div>
-            </div>
-            <textarea value={config.firebaseJson} onChange={e=>setConfig({...config, firebaseJson:e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg h-24 text-xs font-mono focus:ring-2 focus:ring-slate-200 outline-none" placeholder='{"apiKey": "...", ...}'/>
         </div>
         <button onClick={save} className="w-full py-3 bg-slate-800 text-white font-bold rounded-lg hover:bg-slate-700 transition-colors shadow-lg">設定を保存</button>
       </div>
@@ -836,97 +727,50 @@ const SettingsView = ({ config, setConfig, addToast, connectToFirebase }) => {
 
 // --- Main App Component ---
 export default function App() {
-  return (
-    <ErrorBoundary>
-       <MainContent />
-    </ErrorBoundary>
-  );
-}
-
-function MainContent() {
   const [login, setLogin] = useState(false);
   const [toasts, setToasts] = useState([]);
   const [tab, setTab] = useState('dashboard');
-  const [conf, setConf] = useState({ apiKeys:[], rakutenAppId:'', firebaseJson:'' });
-  const [db, setDb] = useState(null);
-  const [dbSt, setDbSt] = useState('..');
+  const [conf, setConf] = useState({ apiKeys:[], rakutenAppId:'' });
   const [hist, setHist] = useState([]); 
   const [ins, setIns] = useState(null);
   const [res, setRes] = useState(null);
+  
   const stopRef = useRef(false);
 
   const toast = (m,t='info') => { const id=Date.now(); setToasts(p=>[...p,{id,message:m,type:t}]); setTimeout(()=>setToasts(p=>p.filter(x=>x.id!==id)),4000); };
   
-  const connectToFirebase = async (json) => {
-      if(!json) return toast("設定JSONが空です", "error");
-      try {
-          const c = parseFirebaseConfig(json);
-          if(!c) throw new Error("JSON形式エラー");
-          
-          if(getApps().length > 0) {
-              // アプリ重複時は既存インスタンスを取得
-              const app = getApp(); 
-              const auth = getAuth(app);
-              // 匿名ログイン
-              await signInAnonymously(auth);
-              const firestore = getFirestore(app);
-              setDb(firestore);
-              setDbSt('OK');
-          } else {
-              const app = initializeApp(c);
-              const auth = getAuth(app);
-              await signInAnonymously(auth); // 匿名ログイン実行
-              const firestore = getFirestore(app);
-              setDb(firestore);
-              setDbSt('OK');
-          }
-          toast("データベースに接続しました (匿名認証)", "success");
-          
-          // snapshotOptionsでestimateを指定し、nullを防ぐ
-          onSnapshot(
-              query(collection(db || getFirestore(getApp()),'check_sessions'), orderBy('createdAt','desc'), limit(20)), 
-              { includeMetadataChanges: true }, 
-              s => { 
-                  setHist(s.docs.map(d => ({
-                      id: d.id,
-                      ...d.data({ serverTimestamps: 'estimate' }) 
-                  }))); 
-              }, 
-              err => {
-                  console.error(err);
-                  if (err.code === 'permission-denied') {
-                       toast("エラー: Firebaseコンソールで『Authentication』の『匿名ログイン』を有効にしてください。", "error");
-                  } else {
-                       toast(`DB接続エラー: ${err.code}`, "error");
-                  }
-                  setDbSt('ERR');
-                  setHist([]);
-              }
-          );
-      } catch(e) {
-          console.error(e);
-          setDbSt('ERR');
-          toast(`接続失敗: ${e.message}`, "error");
-      }
+  // ローカル履歴保存
+  const addToHistory = (newItem) => {
+      const item = { id: Date.now().toString(), ...newItem, createdAt: new Date() };
+      setHist(prev => [item, ...prev].slice(0, 50)); // 最新50件保持
   };
 
   useEffect(() => {
     const k = JSON.parse(localStorage.getItem('gemini_api_keys')||'[]');
     const r = localStorage.getItem('rakuten_app_id')||'';
-    const f = localStorage.getItem('firebase_config')||'';
-    setConf({apiKeys:k, rakutenAppId:r, firebaseJson:f});
+    setConf({apiKeys:k, rakutenAppId:r});
     if(localStorage.getItem('app_auth')==='true') setLogin(true);
     
-    if(f) connectToFirebase(f);
-    else setDbSt('No Config');
+    // デモ用初期データ
+    setHist([
+        { 
+            id: 'demo-1', type: 'url', target: 'https://www.rakuten.co.jp/demo-shop/', 
+            status: 'completed', createdAt: new Date(), 
+            summary: { total: 120, high: 2, critical: 0 },
+            details: [
+                { productName: "ブランド風バッグ", risk_level: "高", reason: "有名ブランドの形状模倣", imageUrl: "" },
+                { productName: "ダイエットサプリ", risk_level: "重大", reason: "健康食品のため禁止", imageUrl: "" }
+            ]
+        }
+    ]);
   }, []);
 
   if(!login) return <LoginView onLogin={async(p)=>{ if(p===APP_CONFIG.FIXED_PASSWORD){setLogin(true); localStorage.setItem('app_auth','true'); toast('ログイン成功', 'success');}else toast('パスワードが間違っています', 'error'); }}/>;
 
   const today = new Date().toLocaleDateString();
   const todayScans = hist.filter(h => {
-      const d = safeDate(h.createdAt);
-      return d && d.toLocaleDateString() === today;
+      const d = new Date(h.createdAt);
+      return d.toLocaleDateString() === today;
   });
 
   return (
@@ -935,7 +779,7 @@ function MainContent() {
       <header className="bg-white border-b h-16 flex items-center justify-between px-6 sticky top-0 z-20 shadow-sm flex-shrink-0">
         <div className="flex items-center gap-2 font-bold text-lg text-slate-800"><div className="bg-slate-800 p-1.5 rounded-lg"><Gavel className="w-5 h-5 text-white"/></div> Rakuten Patrol Pro <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full ml-2">v{APP_CONFIG.VERSION}</span></div>
         <div className="flex items-center gap-4 text-xs font-bold text-slate-500">
-            <span className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full ${dbSt==='OK'?'bg-emerald-100 text-emerald-700':dbSt==='No Config'?'bg-slate-200 text-slate-600':'bg-amber-100 text-amber-700'}`}><div className={`w-2 h-2 rounded-full ${dbSt==='OK'?'bg-emerald-500':dbSt==='No Config'?'bg-slate-400':'bg-amber-500'}`}></div>DB: {dbSt==='OK'?'接続済み':dbSt==='No Config'?'未設定':'エラー'}</span>
+            <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-50 text-blue-700 border border-blue-100"><Database className="w-3 h-3"/> ローカルモード (履歴はブラウザ内のみ)</span>
             <button onClick={()=>{setLogin(false); localStorage.removeItem('app_auth');}} className="p-2 hover:bg-slate-100 rounded-full transition-colors text-slate-400 hover:text-red-500"><LogOut className="w-4 h-4"/></button>
         </div>
       </header>
@@ -958,7 +802,7 @@ function MainContent() {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <StatCard title="本日のスキャン" value={todayScans.length} icon={Activity} color="bg-blue-500" subtext="件のセッション" onClick={() => setTab('history')} />
                 <StatCard title="高リスク検知" value={hist.reduce((a,c)=>a+(c.summary?.critical||0),0)} icon={Siren} color="bg-red-500" subtext="直ちに対応が必要" onClick={() => setTab('history')} />
-                <StatCard title="データベース接続" value={dbSt==='OK'?'OK':'-'} icon={Cloud} color={dbSt==='OK'?'bg-emerald-500':'bg-amber-500'} subtext={dbSt==='No Config'?'未接続':'接続完了'} />
+                <StatCard title="データベース状態" value="ローカル" icon={Database} color="bg-emerald-500" subtext="ブラウザ内保存" />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div onClick={()=>setTab('single')} className="bg-gradient-to-br from-blue-600 to-blue-700 p-8 rounded-2xl shadow-lg shadow-blue-200 text-white cursor-pointer hover:scale-[1.02] transition-transform relative overflow-hidden group"><ShoppingBag className="w-12 h-12 mb-4 text-white/80 group-hover:text-white transition-colors"/><h3 className="font-bold text-xl">通常パトロール</h3><p className="text-blue-100 text-sm mt-2 opacity-80">特定ショップをスキャン</p><ChevronRight className="absolute bottom-6 right-6 w-6 h-6 opacity-0 group-hover:opacity-100 transition-opacity translate-x-2 group-hover:translate-x-0"/></div>
@@ -966,19 +810,19 @@ function MainContent() {
               </div>
             </div>
           )}
-          <div className={tab==='single'?'block h-full max-w-5xl mx-auto':'hidden'}><SinglePatrolView config={conf} db={db} addToast={toast} /></div>
-          <div className={tab==='bulk'?'block h-full max-w-5xl mx-auto':'hidden'}><BulkPatrolView config={conf} db={db} addToast={toast} stopRef={stopRef} resume={res} /></div>
+          <div className={tab==='single'?'block h-full max-w-5xl mx-auto':'hidden'}><SinglePatrolView config={conf} addToHistory={addToHistory} addToast={toast} /></div>
+          <div className={tab==='bulk'?'block h-full max-w-5xl mx-auto':'hidden'}><BulkPatrolView config={conf} addToHistory={addToHistory} addToast={toast} stopRef={stopRef} resume={res} /></div>
           {tab==='history' && (
             <div className="bg-white rounded-xl border shadow-sm p-6 h-full overflow-y-auto max-w-5xl mx-auto animate-in fade-in">
-              <h2 className="font-bold mb-6 flex items-center gap-2 text-lg"><History className="w-5 h-5"/> 実行履歴</h2>
+              <h2 className="font-bold mb-6 flex items-center gap-2 text-lg"><History className="w-5 h-5"/> 実行履歴 (ローカル)</h2>
               <div className="space-y-3">
                 {hist.length === 0 && <div className="text-center text-slate-400 py-10">履歴はありません</div>}
-                {hist.map(h=><div key={h.id} onClick={()=>{setIns(h);setTab('inspect');}} className="flex justify-between p-4 border border-slate-100 rounded-xl hover:bg-slate-50 cursor-pointer transition-colors group"><div className="flex gap-4 items-center"><div className={`p-3 rounded-lg ${h.type==='bulk_url'?'bg-purple-100 text-purple-600':'bg-blue-100 text-blue-600'}`}>{h.type==='bulk_url'?<Layers className="w-5 h-5"/>:<ShoppingBag className="w-5 h-5"/>}</div><div><div className="truncate font-bold text-slate-800">{h.target}</div><div className="text-xs text-slate-400 mt-0.5">{formatDate(h.createdAt)}</div></div></div><div className="flex gap-3 items-center text-xs"><span className={`px-3 py-1 rounded-full font-bold ${h.status==='completed'?'bg-emerald-100 text-emerald-700':'bg-amber-100 text-amber-700'}`}>{STATUS_MAP[h.status] || h.status}</span>{(h.status==='paused'||h.status==='aborted')&&h.type==='bulk_url'&&<button onClick={(e)=>{e.stopPropagation();setRes(h);setTab('bulk');}} className="px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold">再開</button>}<ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-slate-500"/></div></div>)}
+                {hist.map(h=><div key={h.id} onClick={()=>{setIns(h);setTab('inspect');}} className="flex justify-between p-4 border border-slate-100 rounded-xl hover:bg-slate-50 cursor-pointer transition-colors group"><div className="flex gap-4 items-center"><div className={`p-3 rounded-lg ${h.type==='bulk_url'?'bg-purple-100 text-purple-600':'bg-blue-100 text-blue-600'}`}>{h.type==='bulk_url'?<Layers className="w-5 h-5"/>:<ShoppingBag className="w-5 h-5"/>}</div><div><div className="truncate font-bold text-slate-800">{h.target}</div><div className="text-xs text-slate-400 mt-0.5">{new Date(h.createdAt).toLocaleString()}</div></div></div><div className="flex gap-3 items-center text-xs"><span className={`px-3 py-1 rounded-full font-bold ${h.status==='completed'?'bg-emerald-100 text-emerald-700':'bg-amber-100 text-amber-700'}`}>{STATUS_MAP[h.status] || h.status}</span>{(h.status==='paused'||h.status==='aborted')&&h.type==='bulk_url'&&<button onClick={(e)=>{e.stopPropagation();setRes(h);setTab('bulk');}} className="px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold">再開</button>}<ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-slate-500"/></div></div>)}
               </div>
             </div>
           )}
           {tab==='inspect' && ins && <div className="max-w-5xl mx-auto h-full"><ResultTable items={ins.details||[]} title={ins.target} onBack={()=>setTab('history')} /></div>}
-          {tab==='settings' && <SettingsView config={conf} setConfig={setConf} addToast={toast} connectToFirebase={connectToFirebase} />}
+          {tab==='settings' && <SettingsView config={conf} setConfig={setConf} addToast={toast} />}
         </main>
       </div>
     </div>
