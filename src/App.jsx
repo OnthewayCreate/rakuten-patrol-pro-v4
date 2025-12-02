@@ -6,7 +6,7 @@ import {
   ArrowLeft, Store, Info, PlayCircle, Terminal, Activity, Cloud, ImageIcon, 
   Bot, List, Power, Moon, Clock, RefreshCw, AlertTriangle, Bug, Timer, Filter,
   Check, Wifi, WifiOff, PauseCircle, Download, Gavel, Scale, Eye, EyeOff, FastForward,
-  Layers, RotateCcw, StopCircle, Database, ToggleLeft, ToggleRight
+  Layers, RotateCcw, StopCircle, Database, ToggleLeft, ToggleRight, AlertOctagon
 } from 'lucide-react';
 import { initializeApp, getApps, getApp, deleteApp } from 'firebase/app';
 import { 
@@ -16,7 +16,7 @@ import {
 
 /**
  * ============================================================================
- * Rakuten Patrol Pro - Final Stability Edition (v19.8)
+ * Rakuten Patrol Pro - ErrorBoundary & Safe Mode (v19.9)
  * ============================================================================
  */
 
@@ -24,8 +24,59 @@ const APP_CONFIG = {
   FIXED_PASSWORD: 'admin', 
   API_TIMEOUT: 45000, 
   RETRY_LIMIT: 3,     
-  VERSION: '19.8.0-FinalStable'
+  VERSION: '19.9.0-SafeMode'
 };
+
+// --- エラー境界コンポーネント (ホワイトアウト防止の最後の砦) ---
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error("Uncaught error:", error, errorInfo);
+  }
+
+  handleReset = () => {
+      // 問題のある設定を消してリロード
+      localStorage.removeItem('firebase_config');
+      window.location.reload();
+  };
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
+          <div className="bg-white p-8 rounded-2xl shadow-2xl max-w-md w-full text-center border border-red-100">
+            <div className="bg-red-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6">
+                <AlertOctagon className="w-8 h-8 text-red-600" />
+            </div>
+            <h2 className="text-2xl font-bold text-slate-800 mb-2">システムエラーが発生しました</h2>
+            <p className="text-slate-500 mb-6 text-sm leading-relaxed">
+              データの読み込み中に予期せぬ問題が発生しました。<br/>
+              設定データが破損している可能性があります。
+            </p>
+            <div className="bg-slate-100 p-4 rounded-lg text-left text-[10px] font-mono mb-6 overflow-auto max-h-32 text-slate-600 border border-slate-200">
+                {this.state.error && this.state.error.toString()}
+            </div>
+            <button 
+              onClick={this.handleReset} 
+              className="w-full bg-red-600 hover:bg-red-700 text-white py-3 rounded-lg font-bold transition-all shadow-lg flex items-center justify-center gap-2"
+            >
+              <RefreshCw className="w-4 h-4"/> 設定をリセットして復旧
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children; 
+  }
+}
 
 const parseFirebaseConfig = (input) => {
   if (!input) return null;
@@ -37,7 +88,7 @@ const parseFirebaseConfig = (input) => {
   }
 };
 
-// 安全な日付変換ユーティリティ (絶対にクラッシュさせない)
+// 安全な日付変換 (絶対にクラッシュさせない)
 const safeDate = (timestamp) => {
     if (!timestamp) return null;
     try {
@@ -52,6 +103,14 @@ const safeDate = (timestamp) => {
 const formatDate = (timestamp) => {
     const d = safeDate(timestamp);
     return d ? d.toLocaleString() : '日時不明';
+};
+
+const STATUS_MAP = {
+    'processing': '処理中',
+    'paused': '一時停止',
+    'completed': '完了',
+    'error': 'エラー',
+    'aborted': '中断'
 };
 
 // --- プログレスバー ---
@@ -181,15 +240,6 @@ async function checkRakutenAppId(appId) {
     }
 }
 
-const formatTime = (seconds) => {
-  if (!seconds || seconds < 0 || !isFinite(seconds)) return "--:--";
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  if (h > 0) return `${h}時間${m}分`;
-  return `${m}分${s}秒`;
-};
-
 // --- Components ---
 const ToastContainer = ({ toasts, removeToast }) => (
   <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-3 pointer-events-none">
@@ -245,7 +295,6 @@ const LoginView = ({ onLogin }) => {
 
 const ResultTable = ({ items, title, onBack }) => {
   const [showAll, setShowAll] = useState(false);
-  
   const displayItems = useMemo(() => {
     if (showAll) return items.slice(0, 500); 
     return items.filter(i => i.risk_level !== '低' && i.risk_level !== 'Low');
@@ -827,6 +876,14 @@ const SettingsView = ({ config, setConfig, addToast, connectToFirebase }) => {
 
 // --- Main App Component ---
 export default function App() {
+  return (
+    <ErrorBoundary>
+       <MainContent />
+    </ErrorBoundary>
+  );
+}
+
+function MainContent() {
   const [login, setLogin] = useState(false);
   const [toasts, setToasts] = useState([]);
   const [tab, setTab] = useState('dashboard');
@@ -836,7 +893,6 @@ export default function App() {
   const [hist, setHist] = useState([]); 
   const [ins, setIns] = useState(null);
   const [res, setRes] = useState(null);
-  
   const stopRef = useRef(false);
 
   const toast = (m,t='info') => { const id=Date.now(); setToasts(p=>[...p,{id,message:m,type:t}]); setTimeout(()=>setToasts(p=>p.filter(x=>x.id!==id)),4000); };
@@ -849,25 +905,24 @@ export default function App() {
           
           if(getApps().length > 0) {
               const currentApp = getApp();
-              await deleteApp(currentApp); 
+              // deleteAppは非同期だが、ここでは簡易的に再初期化を試みる
+              try { await deleteApp(currentApp); } catch(e){}
           }
           
           const app = initializeApp(c);
           const firestore = getFirestore(app);
-          // Firestoreの接続確認を兼ねた読み込み
-          // snapshotOptions: { serverTimestamps: 'estimate' } は読み取り時に指定するものだが、
-          // ここではonSnapshotのオプションとして設定
           setDb(firestore);
           setDbSt('OK');
           toast("データベースに接続しました", "success");
           
+          // snapshotOptionsでestimateを指定し、nullを防ぐ
           onSnapshot(
               query(collection(firestore,'check_sessions'), orderBy('createdAt','desc'), limit(20)), 
-              { includeMetadataChanges: true }, // ローカルの変更（見積もり時刻など）も即座に反映させる
+              { includeMetadataChanges: true }, 
               s => { 
                   setHist(s.docs.map(d => ({
                       id: d.id,
-                      ...d.data({ serverTimestamps: 'estimate' }) // ここでestimateを指定してnullを防ぐ
+                      ...d.data({ serverTimestamps: 'estimate' }) 
                   }))); 
               }, 
               err => {
