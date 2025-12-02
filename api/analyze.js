@@ -1,4 +1,5 @@
 export default async function handler(request, response) {
+  // CORS設定
   response.setHeader('Access-Control-Allow-Origin', '*');
   response.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -24,9 +25,12 @@ export default async function handler(request, response) {
     }
 
     const cleanKey = apiKey.trim().replace(/[\r\n\s]/g, '');
+    
+    // 指定モデル: gemini-2.5-flash
     const model = 'gemini-2.5-flash'; 
     const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${cleanKey}`;
 
+    // テスト接続用
     if (isTest) {
         const testRes = await fetch(geminiUrl, {
             method: 'POST',
@@ -38,46 +42,29 @@ export default async function handler(request, response) {
         return response.status(testRes.status).json({ status: 'ERR', message: err.error?.message || testRes.statusText });
     }
 
-    // --- 一流弁理士による厳格かつ具体的な判定プロンプト ---
+    // 弁理士プロンプト
     const systemPrompt = `
-    あなたは知的財産権法（商標法、意匠法、著作権法、不正競争防止法）およびECコンプライアンスに精通した、日本トップクラスの弁理士です。
-    提供された「商品画像」と「商品名」を法的・客観的根拠に基づいて監査し、以下の4段階で厳格に判定してください。
+    あなたは知的財産権法（商標法、意匠法、著作権法、不正競争防止法）に精通した、ECサイト監査専門の一流弁理士です。
+    提供された「商品画像」と「商品名」を法的観点から厳格に監査し、権利侵害リスクおよび禁止商材を判定してください。
 
-    【判定基準 (Severity Levels)】
+    【監査基準（以下のいずれかに該当する場合は「高リスク」と判定）】
+    1. **知的財産権の侵害**:
+       - **商標権**: 有名ブランドのロゴ、名称、デザインの無断使用。または「〇〇風」「〇〇タイプ」「〇〇系」等としてブランドの顧客誘引力にただ乗りする商品。
+       - **意匠権・形態模倣**: 人気商品の形状やデザインをデッドコピーした模倣品。
+       - **著作権**: アニメキャラクター、芸能人の写真、他社の公式商品画像の無断転載。
+       - **不正競争**: 著名な商品等表示の冒用、誤認混同を招く表示。
 
-    1. **[重大] (Critical)**: 安全性・公序良俗に関わる絶対禁止商材
-       - **対象**: 食品、飲料、サプリメント、医薬品、コンタクトレンズ。
-       - **対象**: 化粧品、クリーム、美容液、ローションなど「人体に塗布・接触するもの」全て。
-       - **対象**: アダルトグッズ、武器、犯罪を助長するもの。
-       - **判定**: これらに該当する場合、権利侵害の有無に関わらず即座に「重大」と判定すること。
+    2. **安全性・コンプライアンス（全面禁止）**:
+       - **人体への摂取・塗布**: 食品、飲料、サプリメント、医薬品、化粧品、クリーム、美容液、コンタクトレンズなど、「口に入れるもの」「肌に塗るもの」は全て安全性の観点からNGとする。
+       - **公序良俗**: アダルトグッズ、不快感を与える商品。
 
-    2. **[高] (High)**: 明確な権利侵害（デッドコピー・偽ブランド）
-       - **要件**: 画像や名称から、**侵害している「具体的なブランド名」や「キャラクター名」を特定できる場合**に限る。
-       - **対象**: ルイ・ヴィトン、シャネル、ナイキ、ディズニー、アニメキャラ等のロゴやデザインの無断使用。
-       - **対象**: 「スーパーコピー」「N級品」等の表記。
-       - **注意**: 具体的なブランド名を挙げられない場合は「高」にしないこと。
+    【判定ロジック】
+    - 画像と商品名の両方を照合し、少しでも「本物ではない（模倣品）」「権利関係がクリアでない」疑いがある場合は、厳しくリスクありと判断すること。
+    - ノーブランド品であっても、デザインが有名商品に酷似している場合はデッドコピーとして指摘すること。
 
-    3. **[中] (Medium)**: 権利侵害の疑い・グレーゾーン
-       - **対象**: 「〇〇風」「〇〇タイプ」「〇〇系」と謳い、特定ブランドの顧客吸引力に便乗している商品。
-       - **対象**: 特定のブランド名は出していないが、デザインが有名商品に酷似しており、意匠権侵害の懸念が残るもの。
-       - **扱い**: 気にするほどではないかもしれないが、一応監視すべきもの。
-
-    4. **[低] (Low)**: 問題なし
-       - **対象**: 上記に該当しない一般的な雑貨、家電、衣類、家具など。
-       - **対象**: 一般的な形状（チェック柄、ボーダー、普通のトートバッグの形など）であり、特定の権利を侵害していないもの。
-       - **注意**: 権利侵害の確証がないものは、むやみに疑わず「低」と判定すること。冤罪は避けること。
-
-    【出力要件】
-    - 出力は必ず以下のJSON形式のみ。Markdown装飾不要。
-    - risk_level: "重大", "高", "中", "低" のいずれか。
-    - reason: **具体的かつ論理的に記述すること。**
-      - NG例：「権利侵害の疑いがあります」
-      - OK例：「エルメスの『バーキン』の形状における立体商標権を侵害する可能性があります」
-      - OK例：「食品衛生法および薬機法関連のため、ECでの無許可販売は禁止されています」
-      - OK例：「一般的なデザインであり、特定の知的財産権を侵害する要素は見当たりません」
-
-    JSONフォーマット:
-    {"risk_level": "...", "reason": "..."}
+    【出力形式】
+    以下のJSONフォーマットのみで出力してください。Markdown装飾は不要。
+    {"risk_level": "重大" | "高" | "中" | "低", "is_critical": boolean, "reason": "法的根拠に基づく簡潔な指摘（例：商標権侵害の疑い、意匠のデッドコピー、食品のため禁止）"}
     `;
 
     const parts = [{ text: systemPrompt }];
@@ -97,7 +84,7 @@ export default async function handler(request, response) {
                 });
             }
         } catch (imgError) {
-            parts.push({ text: "（画像取得不可。商品名のみで判定）" });
+            parts.push({ text: "（画像取得失敗。商品名のみで厳格に判定してください）" });
         }
     }
 
@@ -109,23 +96,8 @@ export default async function handler(request, response) {
 
     if (!geminiRes.ok) {
         const errData = await geminiRes.json().catch(() => ({}));
-        // フォールバック (1.5-flash)
-        if (geminiRes.status === 404) {
-             const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${cleanKey}`;
-             const fallbackRes = await fetch(fallbackUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ contents: [{ parts }] })
-             });
-             if (fallbackRes.ok) {
-                 const fbData = await fallbackRes.json();
-                 const fbText = fbData.candidates?.[0]?.content?.parts?.[0]?.text;
-                 const fbJsonMatch = fbText.match(/\{[\s\S]*\}/);
-                 const fbResult = fbJsonMatch ? JSON.parse(fbJsonMatch[0]) : { risk_level: "不明", reason: "解析不能" };
-                 return response.status(200).json(fbResult);
-             }
-        }
-        return response.status(geminiRes.status).json({ risk_level: "エラー", reason: errData.error?.message || geminiRes.statusText });
+        const message = errData.error?.message || geminiRes.statusText;
+        return response.status(geminiRes.status).json({ risk_level: "エラー", reason: message });
     }
 
     const data = await geminiRes.json();
@@ -136,14 +108,7 @@ export default async function handler(request, response) {
     }
 
     const jsonMatch = text.match(/\{[\s\S]*\}/);
-    let result = jsonMatch ? JSON.parse(jsonMatch[0]) : { risk_level: "不明", reason: "フォーマットエラー" };
-
-    // クリティカルフラグの自動付与（アプリ側の互換性のため）
-    if (result.risk_level === '重大') {
-        result.is_critical = true;
-    } else {
-        result.is_critical = false;
-    }
+    const result = jsonMatch ? JSON.parse(jsonMatch[0]) : { risk_level: "不明", is_critical: false, reason: "解析エラー" };
 
     return response.status(200).json(result);
 

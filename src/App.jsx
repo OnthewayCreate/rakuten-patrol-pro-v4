@@ -6,7 +6,7 @@ import {
   ArrowLeft, Store, Info, PlayCircle, Terminal, Activity, Cloud, ImageIcon, 
   Bot, List, Power, Moon, Clock, RefreshCw, AlertTriangle, Bug, Timer, Filter,
   Check, Wifi, WifiOff, PauseCircle, Download, Gavel, Scale, Eye, EyeOff, FastForward,
-  Layers, RotateCcw, StopCircle, Database, ToggleLeft, ToggleRight, PowerOff
+  Layers, RotateCcw, StopCircle, Database, ToggleLeft, ToggleRight, AlertOctagon
 } from 'lucide-react';
 import { initializeApp, getApps, getApp, deleteApp } from 'firebase/app';
 import { getAuth, signInAnonymously } from 'firebase/auth';
@@ -17,7 +17,7 @@ import {
 
 /**
  * ============================================================================
- * Rakuten Patrol Pro - Final Ultimate Edition (v20.0)
+ * Rakuten Patrol Pro - Firebase Fix Edition (v20.1)
  * ============================================================================
  */
 
@@ -25,35 +25,46 @@ const APP_CONFIG = {
   FIXED_PASSWORD: 'admin', 
   API_TIMEOUT: 45000, 
   RETRY_LIMIT: 3,     
-  VERSION: '20.0.0-Final'
+  VERSION: '20.1.0-FirebaseFix'
 };
 
-// 強力な設定パーサー: JSONだけでなくJSオブジェクト形式も許容して解析
+// --- エラー境界コンポーネント ---
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) { return { hasError: true, error }; }
+  componentDidCatch(error, errorInfo) { console.error("Uncaught error:", error, errorInfo); }
+  handleReset = () => { localStorage.removeItem('firebase_config'); window.location.reload(); };
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
+          <div className="bg-white p-8 rounded-2xl shadow-2xl max-w-md w-full text-center border border-red-100">
+            <div className="bg-red-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6"><AlertOctagon className="w-8 h-8 text-red-600" /></div>
+            <h2 className="text-2xl font-bold text-slate-800 mb-2">システムエラー</h2>
+            <p className="text-slate-500 mb-6 text-sm">予期せぬエラーが発生しました。</p>
+            <div className="bg-slate-100 p-4 rounded-lg text-left text-[10px] font-mono mb-6 overflow-auto max-h-32 text-slate-600 border border-slate-200">{this.state.error && this.state.error.toString()}</div>
+            <button onClick={this.handleReset} className="w-full bg-red-600 hover:bg-red-700 text-white py-3 rounded-lg font-bold transition-all shadow-lg flex items-center justify-center gap-2"><RefreshCw className="w-4 h-4"/> 復旧する</button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children; 
+  }
+}
+
 const parseFirebaseConfig = (input) => {
   if (!input) return null;
-  try { 
-    // まずJSONとしてトライ
-    return JSON.parse(input); 
-  } catch (e) {
+  try { return JSON.parse(input); } catch (e) {
     try {
-      // JSオブジェクト形式 (const firebaseConfig = { ... }) の場合の整形
-      // 1. 変数宣言を除去
-      let jsonStr = input.replace(/^(const|var|let)\s+\w+\s*=\s*/, '');
-      // 2. 末尾のセミコロンを除去
-      jsonStr = jsonStr.replace(/;\s*$/, '');
-      // 3. キーをダブルクォートで囲む ( key: -> "key": )
-      jsonStr = jsonStr.replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":');
-      // 4. シングルクォートをダブルクォートに置換
-      jsonStr = jsonStr.replace(/'/g, '"');
-      // 5. 末尾のカンマなどを掃除（簡易的）
-      jsonStr = jsonStr.replace(/,\s*}/g, '}');
-      
+      let jsonStr = input.replace(/^(const|var|let)\s+\w+\s*=\s*/, '').replace(/;\s*$/, '').replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":').replace(/'/g, '"');
       return JSON.parse(jsonStr);
     } catch (e2) { return null; }
   }
 };
 
-// 安全な日付変換
 const safeDate = (timestamp) => {
     if (!timestamp) return null;
     try {
@@ -70,13 +81,7 @@ const formatDate = (timestamp) => {
     return d ? d.toLocaleString() : '日時不明';
 };
 
-const STATUS_MAP = {
-    'processing': '処理中',
-    'paused': '一時停止',
-    'completed': '完了',
-    'error': 'エラー',
-    'aborted': '中断'
-};
+const STATUS_MAP = { 'processing': '処理中', 'paused': '一時停止', 'completed': '完了', 'error': 'エラー', 'aborted': '中断' };
 
 // --- プログレスバー ---
 const ProgressBar = ({ current, total, label, color = "bg-blue-600", subLabel }) => {
@@ -88,10 +93,7 @@ const ProgressBar = ({ current, total, label, color = "bg-blue-600", subLabel })
         <span>{subLabel || `${percent}% (${current.toLocaleString()}/${total.toLocaleString()})`}</span>
       </div>
       <div className="w-full bg-slate-200 rounded-full h-2.5 overflow-hidden">
-        <div 
-          className={`h-2.5 rounded-full transition-all duration-300 ${color}`} 
-          style={{ width: `${percent}%` }}
-        ></div>
+        <div className={`h-2.5 rounded-full transition-all duration-300 ${color}`} style={{ width: `${percent}%` }}></div>
       </div>
     </div>
   );
@@ -110,9 +112,7 @@ async function callGeminiDirectly(apiKey, prompt, isTest = false) {
         const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                contents: [{ parts: [{ text: prompt }] }]
-            }),
+            body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
             signal: controller.signal
         });
         clearTimeout(timeoutId);
@@ -121,16 +121,11 @@ async function callGeminiDirectly(apiKey, prompt, isTest = false) {
             const err = await response.json().catch(() => ({}));
             throw new Error(err.error?.message || `HTTP ${response.status}`);
         }
-
         const data = await response.json();
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
         if (!text) throw new Error('No response from AI');
-        
         return text;
-    } catch (error) {
-        clearTimeout(timeoutId);
-        throw error;
-    }
+    } catch (error) { clearTimeout(timeoutId); throw error; }
 }
 
 async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
@@ -153,11 +148,10 @@ async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
 
     【出力要件】
     - JSON形式のみで出力。Markdown装飾は不可。
-    - **reason**: 「どのブランド/商品の」「どの権利（商標権/意匠権/著作権等）」に抵触する可能性があるかを具体的に特定し、50〜80文字程度で記述すること。
-    - 食品等は「安全性の観点から販売禁止」と明記。
+    - **reason**: 「どのブランド/商品の」「どの権利」に抵触するか具体的に特定し、50〜80文字程度で記述。食品等は「安全性の観点から販売禁止」と明記。
 
     出力フォーマット:
-    {"risk_level": "重大"|"高"|"中"|"低", "is_critical": boolean, "reason": "具体的な法的根拠とリスク理由"}
+    {"risk_level": "重大"|"高"|"中"|"低", "is_critical": boolean, "reason": "具体的理由"}
   `;
 
   try {
@@ -165,7 +159,6 @@ async function analyzeItemRisk(itemData, apiKeys, retryCount = 0) {
     const jsonMatch = aiResponseText.match(/\{[\s\S]*\}/);
     const aiResult = jsonMatch ? JSON.parse(jsonMatch[0]) : { risk_level: "不明", is_critical: false, reason: "解析不能" };
     return aiResult;
-
   } catch (error) {
     if ((error.message.includes('429') || error.message.includes('503')) && retryCount < APP_CONFIG.RETRY_LIMIT) {
         const waitTime = Math.pow(1.5, retryCount) * 300; 
@@ -195,14 +188,9 @@ async function checkRakutenAppId(appId) {
         u.searchParams.append('page', 1);
         const r = await fetch(u);
         const d = await r.json();
-        if (r.ok && !d.error && !d.error_description) {
-            return { ok: true, msg: 'OK' };
-        } else {
-            return { ok: false, msg: d.error_description || d.error || '認証エラー' };
-        }
-    } catch(e) {
-        return { ok: false, msg: e.message };
-    }
+        if (r.ok && !d.error && !d.error_description) return { ok: true, msg: 'OK' };
+        return { ok: false, msg: d.error_description || d.error || '認証エラー' };
+    } catch(e) { return { ok: false, msg: e.message }; }
 }
 
 const formatTime = (seconds) => {
@@ -269,7 +257,6 @@ const LoginView = ({ onLogin }) => {
 
 const ResultTable = ({ items, title, onBack }) => {
   const [showAll, setShowAll] = useState(false);
-  
   const displayItems = useMemo(() => {
     if (showAll) return items.slice(0, 500); 
     return items.filter(i => i.risk_level !== '低' && i.risk_level !== 'Low');
@@ -691,16 +678,9 @@ const BulkPatrolView = ({ config, db, addToast, stopRef, resume }) => {
       setStat(prev => ({...prev, currentShopItems: totalShopItems, done: i+1}));
       await new Promise(r=>setTimeout(r, 500));
     }
-    
-    // 全停止でなければ継続
-    if(stopRef.current) {
-        addLog("一時停止しました");
-        if(db && sid) await updateDoc(doc(db,'check_sessions',sid), {status:'paused', updatedAt:serverTimestamp()});
-    } else {
-        setProc(false);
-        if(db && sid) await updateDoc(doc(db,'check_sessions',sid), {status:'completed', updatedAt:serverTimestamp()});
-        addToast("全ショップ完了", "success");
-    }
+    setProc(false);
+    if(db && sid) await updateDoc(doc(db,'check_sessions',sid), {status:'completed', updatedAt:serverTimestamp()});
+    addToast(stopRef.current?"一時停止":"全ショップ完了", "success");
   };
 
   return (
@@ -856,6 +836,14 @@ const SettingsView = ({ config, setConfig, addToast, connectToFirebase }) => {
 
 // --- Main App Component ---
 export default function App() {
+  return (
+    <ErrorBoundary>
+       <MainContent />
+    </ErrorBoundary>
+  );
+}
+
+function MainContent() {
   const [login, setLogin] = useState(false);
   const [toasts, setToasts] = useState([]);
   const [tab, setTab] = useState('dashboard');
@@ -865,7 +853,6 @@ export default function App() {
   const [hist, setHist] = useState([]); 
   const [ins, setIns] = useState(null);
   const [res, setRes] = useState(null);
-  
   const stopRef = useRef(false);
 
   const toast = (m,t='info') => { const id=Date.now(); setToasts(p=>[...p,{id,message:m,type:t}]); setTimeout(()=>setToasts(p=>p.filter(x=>x.id!==id)),4000); };
@@ -895,6 +882,7 @@ export default function App() {
           }
           toast("データベースに接続しました (匿名認証)", "success");
           
+          // snapshotOptionsでestimateを指定し、nullを防ぐ
           onSnapshot(
               query(collection(db || getFirestore(getApp()),'check_sessions'), orderBy('createdAt','desc'), limit(20)), 
               { includeMetadataChanges: true }, 
@@ -906,9 +894,13 @@ export default function App() {
               }, 
               err => {
                   console.error(err);
+                  if (err.code === 'permission-denied') {
+                       toast("エラー: Firebaseコンソールで『Authentication』の『匿名ログイン』を有効にしてください。", "error");
+                  } else {
+                       toast(`DB接続エラー: ${err.code}`, "error");
+                  }
                   setDbSt('ERR');
                   setHist([]);
-                  toast(`DB接続エラー: ${err.code}`, "error");
               }
           );
       } catch(e) {
